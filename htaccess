@@ -1,0 +1,9 @@
+# تعطيل فحص جدار حماية السيرفر ModSecurity لتجنب حظر إرسال الاستمارات البرمجية
+<IfModule mod_security.c>
+  SecFilterEngine Off
+  SecFilterScanPOST Off
+</IfModule>
+
+<IfModule mod_security2.c>
+  SecRuleEngine Off
+</IfModule>

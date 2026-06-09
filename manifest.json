@@ -1,0 +1,22 @@
+{
+  "name": "GIS MANAGER Portal",
+  "short_name": "GIS MANAGER",
+  "description": "نظام إدارة السجلات الجغرافية الميدانية المطور",
+  "start_url": "index.php?page=home-view",
+  "display": "standalone",
+  "background_color": "#1e293b",
+  "theme_color": "#1e293b",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "uploads/logos/app_icon_192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "uploads/logos/app_icon_512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
