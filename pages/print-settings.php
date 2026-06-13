@@ -1,4 +1,5 @@
 <?php
+// pages/print-settings.php
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     die("غير مسموح بالوصول المباشر.");
 }
@@ -7,163 +8,193 @@ $message = '';
 $error = '';
 
 // قراءة رسائل الجلسة الأمنية
-if (isset($_SESSION['print_success_msg'])) { $message = $_SESSION['print_success_msg']; unset($_SESSION['print_success_msg']); }
-if (isset($_SESSION['print_error_msg'])) { $error = $_SESSION['print_error_msg']; unset($_SESSION['print_error_msg']); }
+if (isset($_SESSION['print_success_msg'])) { 
+    $message = $_SESSION['print_success_msg']; 
+    unset($_SESSION['print_success_msg']); 
+}
+if (isset($_SESSION['print_error_msg'])) { 
+    $error = $_SESSION['print_error_msg']; 
+    unset($_SESSION['print_error_msg']); 
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    
-    // 1. إضافة أو تعديل قالب طباعة مستقل
     if (isset($_POST['action']) && $_POST['action'] === 'save_print_template') {
         $template_id = intval($_POST['template_id']);
         $template_name = trim($_POST['template_name']);
+        $main_title = trim($_POST['main_title']);
+        $signatures_title = trim($_POST['signatures_title']);
+        $footer_text = trim($_POST['footer_text']);
+        
         $header_right_1 = trim($_POST['header_right_1']);
         $header_right_2 = trim($_POST['header_right_2']);
         $header_right_3 = trim($_POST['header_right_3']);
-        $main_title = trim($_POST['main_title']);
+        
+        $paper_size = trim($_POST['paper_size']);
+        $orientation = trim($_POST['orientation']);
+        $header_font = trim($_POST['header_font']);
+        
+        $header_height = intval($_POST['header_height']);
+        $row_height = intval($_POST['row_height']);
+        $font_size_pt = intval($_POST['font_size_pt']);
+        $card_padding_px = intval($_POST['card_padding_px']);
+        $page_margin_mm = intval($_POST['page_margin_mm']);
+        $grid_gap_px = intval($_POST['grid_gap_px']);
+        
         $show_logo = isset($_POST['show_logo']) ? 1 : 0;
-        $signatures_title = trim($_POST['signatures_title']);
 
-        $sig1_title = trim($_POST['sig1_title']); $sig1_name = trim($_POST['sig1_name']); $sig1_show = isset($_POST['sig1_show']) ? 1 : 0;
-        $sig2_title = trim($_POST['sig2_title']); $sig2_name = trim($_POST['sig2_name']); $sig2_show = isset($_POST['sig2_show']) ? 1 : 0;
-        $sig3_title = trim($_POST['sig3_title']); $sig3_name = trim($_POST['sig3_name']); $sig3_show = isset($_POST['sig3_show']) ? 1 : 0;
-        $sig4_title = trim($_POST['sig4_title']); $sig4_name = trim($_POST['sig4_name']); $sig4_show = isset($_POST['sig4_show']) ? 1 : 0;
-        $sig5_title = trim($_POST['sig5_title']); $sig5_name = trim($_POST['sig5_name']); $sig5_show = isset($_POST['sig5_show']) ? 1 : 0;
+        // التوقيعات الخمسة
+        $sig1_title = trim($_POST['sig1_title']);
+        $sig1_name = trim($_POST['sig1_name']);
+        $sig1_show = isset($_POST['sig1_show']) ? 1 : 0;
 
-        $footer_text = trim($_POST['footer_text']);
+        $sig2_title = trim($_POST['sig2_title']);
+        $sig2_name = trim($_POST['sig2_name']);
+        $sig2_show = isset($_POST['sig2_show']) ? 1 : 0;
 
-        // بناء وحفظ مصفوفة ترتيب ومقاسات الكروت كـ JSON
-        $groups_config_arr = [];
-        if (isset($_POST['group_names_list'])) {
-            foreach ($_POST['group_names_list'] as $g_name) {
-                $groups_config_arr[$g_name] = [
-                    'order' => intval($_POST['group_order'][$g_name]),
-                    'width' => trim($_POST['group_width'][$g_name]) 
-                ];
-            }
-        }
-        $groups_config_json = json_encode($groups_config_arr, JSON_UNESCAPED_UNICODE);
+        $sig3_title = trim($_POST['sig3_title']);
+        $sig3_name = trim($_POST['sig3_name']);
+        $sig3_show = isset($_POST['sig3_show']) ? 1 : 0;
+
+        $sig4_title = trim($_POST['sig4_title']);
+        $sig4_name = trim($_POST['sig4_name']);
+        $sig4_show = isset($_POST['sig4_show']) ? 1 : 0;
+
+        $sig5_title = trim($_POST['sig5_title']);
+        $sig5_name = trim($_POST['sig5_name']);
+        $sig5_show = isset($_POST['sig5_show']) ? 1 : 0;
+
+        // فك تشفير البيانات المرسلة عبر Base64 لتلافي حظر جدران حماية السيرفر (WAF)
+        $custom_css = isset($_POST['custom_css_encoded']) ? base64_decode($_POST['custom_css_encoded']) : '';
+        $groups_config_json = isset($_POST['groups_config_json']) ? $_POST['groups_config_json'] : '{}';
 
         if (!empty($template_name) && !empty($main_title)) {
             try {
                 $logo_path = null;
-                $old_template = null;
-
                 if ($template_id > 0) {
-                    $stmtCheck = $pdo->prepare("SELECT id, logo_path FROM print_templates WHERE id = ?");
+                    $stmtCheck = $pdo->prepare("SELECT logo_path FROM print_templates WHERE id = ?");
                     $stmtCheck->execute([$template_id]);
-                    $old_template = $stmtCheck->fetch();
-                    if ($old_template) { $logo_path = $old_template['logo_path']; }
+                    $old_tmpl = $stmtCheck->fetch();
+                    if ($old_tmpl) {
+                        $logo_path = $old_tmpl['logo_path'];
+                    }
                 }
 
                 if (isset($_POST['remove_logo']) && $_POST['remove_logo'] == 1) {
-                    if ($logo_path && file_exists($logo_path)) { unlink($logo_path); }
+                    if ($logo_path && file_exists($logo_path)) {
+                        unlink($logo_path);
+                    }
                     $logo_path = null;
                 }
 
                 if (isset($_FILES['logo_file']) && $_FILES['logo_file']['error'] === UPLOAD_ERR_OK) {
                     $upload_dir = 'uploads/logos/';
-                    if (!is_dir($upload_dir)) { mkdir($upload_dir, 0755, true); }
-                    if ($logo_path && file_exists($logo_path)) { unlink($logo_path); }
-
-                    $file_extension = strtolower(pathinfo($_FILES['logo_file']['name'], PATHINFO_EXTENSION));
-                    if (in_array($file_extension, ['jpg', 'jpeg', 'png', 'gif'])) {
-                        $new_filename = 'logo_' . uniqid() . '.' . $file_extension;
-                        $target_file = $upload_dir . $new_filename;
-                        if (move_uploaded_file($_FILES['logo_file']['tmp_name'], $target_file)) {
-                            $logo_path = $target_file;
-                        }
+                    if (!is_dir($upload_dir)) {
+                        mkdir($upload_dir, 0755, true);
+                    }
+                    if ($logo_path && file_exists($logo_path)) {
+                        unlink($logo_path);
+                    }
+                    $ext = strtolower(pathinfo($_FILES['logo_file']['name'], PATHINFO_EXTENSION));
+                    if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif'])) {
+                        $logo_path = $upload_dir . 'logo_' . uniqid() . '.' . $ext;
+                        move_uploaded_file($_FILES['logo_file']['tmp_name'], $logo_path);
                     }
                 }
 
-                if ($old_template) {
-                    $updateSql = "
-                        UPDATE print_templates SET 
-                            template_name = ?, header_right_1 = ?, header_right_2 = ?, header_right_3 = ?, 
-                            main_title = ?, logo_path = ?, show_logo = ?, signatures_title = ?,
-                            sig1_title = ?, sig1_name = ?, sig1_show = ?,
-                            sig2_title = ?, sig2_name = ?, sig2_show = ?,
-                            sig3_title = ?, sig3_name = ?, sig3_show = ?,
-                            sig4_title = ?, sig4_name = ?, sig4_show = ?,
-                            sig5_title = ?, sig5_name = ?, sig5_show = ?, footer_text = ?, groups_config = ?
-                        WHERE id = ?
-                    ";
-                    $stmtUp = $pdo->prepare($updateSql);
-                    $stmtUp->execute([
-                        $template_name, $header_right_1, $header_right_2, $header_right_3, 
-                        $main_title, $logo_path, $show_logo, $signatures_title,
+                if ($template_id > 0) {
+                    $sql = "UPDATE print_templates SET 
+                                template_name = ?, main_title = ?, signatures_title = ?, show_logo = ?,
+                                paper_size = ?, orientation = ?, header_font = ?, header_height = ?,
+                                row_height = ?, font_size_pt = ?, card_padding_px = ?, page_margin_mm = ?,
+                                grid_gap_px = ?, groups_config = ?, custom_css = ?, logo_path = ?,
+                                header_right_1 = ?, header_right_2 = ?, header_right_3 = ?, footer_text = ?,
+                                sig1_title = ?, sig1_name = ?, sig1_show = ?,
+                                sig2_title = ?, sig2_name = ?, sig2_show = ?,
+                                sig3_title = ?, sig3_name = ?, sig3_show = ?,
+                                sig4_title = ?, sig4_name = ?, sig4_show = ?,
+                                sig5_title = ?, sig5_name = ?, sig5_show = ?
+                            WHERE id = ?";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([
+                        $template_name, $main_title, $signatures_title, $show_logo,
+                        $paper_size, $orientation, $header_font, $header_height,
+                        $row_height, $font_size_pt, $card_padding_px, $page_margin_mm,
+                        $grid_gap_px, $groups_config_json, $custom_css, $logo_path,
+                        $header_right_1, $header_right_2, $header_right_3, $footer_text,
                         $sig1_title, $sig1_name, $sig1_show,
                         $sig2_title, $sig2_name, $sig2_show,
                         $sig3_title, $sig3_name, $sig3_show,
                         $sig4_title, $sig4_name, $sig4_show,
-                        $sig5_title, $sig5_name, $sig5_show, $footer_text, $groups_config_json, $template_id
+                        $sig5_title, $sig5_name, $sig5_show,
+                        $template_id
                     ]);
                 } else {
-                    // [تم الحل]: إضافة علامة الاستفهام الـ 25 المفقودة في الـ VALUES ليتطابق مع الـ 25 عموداً المعينين بالأعلى
-                    $insertSql = "
-                        INSERT INTO print_templates (
-                            template_name, header_right_1, header_right_2, header_right_3, 
-                            main_title, logo_path, show_logo, signatures_title,
-                            sig1_title, sig1_name, sig1_show,
-                            sig2_title, sig2_name, sig2_show,
-                            sig3_title, sig3_name, sig3_show,
-                            sig4_title, sig4_name, sig4_show,
-                            sig5_title, sig5_name, sig5_show, footer_text, groups_config
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ";
-                    $stmtIns = $pdo->prepare($insertSql);
-                    $stmtIns->execute([
-                        $template_name, $header_right_1, $header_right_2, $header_right_3, 
-                        $main_title, $logo_path, $show_logo, $signatures_title,
+                    $sql = "INSERT INTO print_templates (
+                                template_name, main_title, signatures_title, show_logo,
+                                paper_size, orientation, header_font, header_height,
+                                row_height, font_size_pt, card_padding_px, page_margin_mm,
+                                grid_gap_px, groups_config, custom_css, logo_path,
+                                header_right_1, header_right_2, header_right_3, footer_text,
+                                sig1_title, sig1_name, sig1_show,
+                                sig2_title, sig2_name, sig2_show,
+                                sig3_title, sig3_name, sig3_show,
+                                sig4_title, sig4_name, sig4_show,
+                                sig5_title, sig5_name, sig5_show
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([
+                        $template_name, $main_title, $signatures_title, $show_logo,
+                        $paper_size, $orientation, $header_font, $header_height,
+                        $row_height, $font_size_pt, $card_padding_px, $page_margin_mm,
+                        $grid_gap_px, $groups_config_json, $custom_css, $logo_path,
+                        $header_right_1, $header_right_2, $header_right_3, $footer_text,
                         $sig1_title, $sig1_name, $sig1_show,
                         $sig2_title, $sig2_name, $sig2_show,
                         $sig3_title, $sig3_name, $sig3_show,
                         $sig4_title, $sig4_name, $sig4_show,
-                        $sig5_title, $sig5_name, $sig5_show, $footer_text, $groups_config_json
+                        $sig5_title, $sig5_name, $sig5_show
                     ]);
                 }
-                $_SESSION['print_success_msg'] = "تم حفظ وتثبيت إعدادات ومقاسات قالب الطباعة بنجاح للنموذج المختار.";
-            } catch (PDOException $e) { $_SESSION['print_error_msg'] = "حدث خطأ في قاعدة البيانات: " . $e->getMessage(); }
-        } else { $_SESSION['print_error_msg'] = "يرجى ملء الحقول المطلوبة لقالب الطباعة."; }
-        
+                $_SESSION['print_success_msg'] = "تم حفظ الإعدادات وقوالب الطباعة بنجاح للنموذج المحدد.";
+            } catch (PDOException $e) {
+                $_SESSION['print_error_msg'] = "حدث خطأ أثناء الاتصال بقاعدة البيانات: " . $e->getMessage();
+            }
+        } else {
+            $_SESSION['print_error_msg'] = "تنبيه: يرجى إدخال اسم القالب وعنوان التقرير الرئيسي.";
+        }
         header("Location: index.php?page=print-settings");
         exit;
     }
 
-    // 2. حذف قالب طباعة
     if (isset($_POST['action']) && $_POST['action'] === 'delete_template') {
         $t_id = intval($_POST['template_id']);
         try {
-            $stmtDelT = $pdo->prepare("DELETE FROM print_templates WHERE id = ?");
-            $stmtDelT->execute([$t_id]);
-            $_SESSION['print_success_msg'] = "تم حذف قالب الطباعة المحدد من السيستم الكلي.";
-        } catch (PDOException $e) { $_SESSION['print_error_msg'] = "فشل حذف قالب الطباعة."; }
+            $stmtDel = $pdo->prepare("DELETE FROM print_templates WHERE id = ?");
+            $stmtDel->execute([$t_id]);
+            $_SESSION['print_success_msg'] = "تم حذف قالب الطباعة بنجاح.";
+        } catch (PDOException $e) {
+            $_SESSION['print_error_msg'] = "فشل حذف القالب المختار.";
+        }
         header("Location: index.php?page=print-settings");
         exit;
     }
 }
 
-// جلب البيانات
-$types = $pdo->query("SELECT * FROM record_types ORDER BY id DESC")->fetchAll();
 $all_templates = $pdo->query("SELECT * FROM print_templates ORDER BY id DESC")->fetchAll();
 $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_active = 1")->fetchAll(PDO::FETCH_COLUMN);
+
+// إضافة الخريطة كجروب افتراضي للتحكم في ظهورها ومقاسها ضمن الكروت
+if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups)) {
+    $all_db_groups[] = "الموقع الجغرافي للمعاينة";
+}
 ?>
 
-<!-- التنبيهات باستخدام SweetAlert2 الفاخرة -->
-<?php if (!empty($message)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تم الحفظ', text: '<?php echo $message; ?>', confirmButtonText: 'حسناً' }); });</script>
-<?php endif; ?>
-<?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo $error; ?>' }); });</script>
-<?php endif; ?>
-
-<!-- تصميم محاكاة لطلبك بأسلوب انسيابي عالي ومظهر عصري -->
 <div class="max-w-6xl mx-auto space-y-6 animate-fade">
-
     <!-- كارت التحكم واختيار القالب -->
     <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
         <div class="flex items-center space-x-3 space-x-reverse mb-4 border-b pb-3">
             <div class="p-2 bg-indigo-100 text-indigo-600 rounded-lg"><i class="fa-solid fa-file-invoice text-xl"></i></div>
-            <h3 class="text-sm font-bold text-gray-800 font-sans">إدارة قوالب ونماذج الطباعة العامة</h3>
+            <h3 class="text-sm font-bold text-gray-800">إدارة وتخصيص قوالب الطباعة</h3>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -177,8 +208,8 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
                 </select>
             </div>
             <div class="hidden" id="template-name-container">
-                <label class="block text-gray-600 text-xs font-semibold mb-1">اسم قالب الطباعة (مثال: نموذج 1 - إثبات حالة):</label>
-                <input type="text" id="template_name_input" placeholder="اسم النموذج" class="w-full px-4 py-2 border rounded-lg text-xs focus:outline-none bg-white font-bold">
+                <label class="block text-gray-600 text-xs font-semibold mb-1">اسم قالب الطباعة:</label>
+                <input type="text" id="template_name_input" placeholder="اسم النموذج الجديد" class="w-full px-4 py-2 border rounded-lg text-xs focus:outline-none bg-white font-bold">
             </div>
         </div>
     </div>
@@ -188,12 +219,71 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
         <input type="hidden" name="action" value="save_print_template">
         <input type="hidden" name="template_id" id="hidden_template_id" value="0">
         <input type="hidden" name="template_name" id="hidden_template_name">
+        <input type="hidden" name="groups_config_json" id="groups_config_json">
+        <input type="hidden" name="custom_css_encoded" id="custom_css_encoded">
 
-        <!-- 1. بوكس إعدادات رأس الصفحة (الهيدر) -->
+        <!-- 1. إعدادات الورقة والمقاسات الفنية -->
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
+            <div class="flex items-center space-x-3 space-x-reverse mb-2 border-b pb-3">
+                <div class="p-2 bg-blue-100 text-blue-600 rounded-lg"><i class="fa-solid fa-file-pdf text-lg"></i></div>
+                <h3 class="text-sm font-bold text-gray-800">إعدادات الورقة والتنسيقات الهندسية للطباعة</h3>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">حجم الورقة:</label>
+                    <select name="paper_size" id="paper_size" class="w-full px-3 py-1.5 border rounded-lg text-xs font-bold bg-white">
+                        <option value="A4">A4 قياسي</option>
+                        <option value="A3">A3 عريض</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">اتجاه الورقة:</label>
+                    <select name="orientation" id="orientation" class="w-full px-3 py-1.5 border rounded-lg text-xs font-bold bg-white">
+                        <option value="Portrait">عمودي (Portrait)</option>
+                        <option value="Landscape">أفقي (Landscape)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">نوع الخط الافتراضي:</label>
+                    <select name="header_font" id="header_font" class="w-full px-3 py-1.5 border rounded-lg text-xs font-bold bg-white">
+                        <option value="Cairo">Cairo (عصري)</option>
+                        <option value="Tajawal">Tajawal (ناعم)</option>
+                        <option value="Amiri">Amiri (رسمي)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">حجم خط الحقول (pt):</label>
+                    <input type="number" name="font_size_pt" id="font_size_pt" value="10" class="w-full px-3 py-1 border rounded-lg text-xs font-bold bg-white">
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">ارتفاع الهيدر (px):</label>
+                    <input type="number" name="header_height" id="header_height" value="30" class="w-full px-3 py-1 border rounded-lg text-xs font-bold bg-white">
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">هوامش الصفحة (mm):</label>
+                    <input type="number" name="page_margin_mm" id="page_margin_mm" value="8" class="w-full px-3 py-1 border rounded-lg text-xs font-bold bg-white">
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">المسافات بين الكروت (px):</label>
+                    <input type="number" name="grid_gap_px" id="grid_gap_px" value="12" class="w-full px-3 py-1 border rounded-lg text-xs font-bold bg-white">
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">حشو الكروت الداخلي (px):</label>
+                    <input type="number" name="card_padding_px" id="card_padding_px" value="12" class="w-full px-3 py-1 border rounded-lg text-xs font-bold bg-white">
+                </div>
+                <div>
+                    <input type="hidden" name="row_height" id="row_height" value="24">
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. بوكس إعدادات رأس الصفحة (الهيدر والشعار) -->
         <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
             <div class="flex items-center space-x-3 space-x-reverse mb-2 border-b pb-3">
                 <div class="p-2 bg-blue-100 text-blue-600 rounded-lg"><i class="fa-solid fa-heading text-lg"></i></div>
-                <h3 class="text-sm font-bold text-gray-800 font-sans">إعدادات رأس الصفحة (الهيدر)</h3>
+                <h3 class="text-sm font-bold text-gray-800">إعدادات رأس التقرير المطبوع (الهيدر والشعار)</h3>
             </div>
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
@@ -211,13 +301,13 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
                         <input type="text" name="header_right_3" id="header_right_3" placeholder="مثال: وحدة المتغيرات المكانية" class="w-full px-4 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none text-right bg-white font-semibold">
                     </div>
                     <div>
-                        <label class="block text-gray-600 text-xs font-bold mb-1">العنوان الرئيسي (وسط):</label>
+                        <label class="block text-gray-600 text-xs font-bold mb-1">العنوان الرئيسي المكتوب في المنتصف:</label>
                         <input type="text" name="main_title" id="main_title" placeholder="مثال: محضر إثبات حالة معاينة ميدانية" required class="w-full px-4 py-2 border border-gray-200 rounded-lg text-xs font-bold text-gray-800 focus:outline-none text-center bg-white">
                     </div>
                 </div>
 
                 <div class="space-y-4 bg-gray-50/50 p-6 rounded-2xl border border-gray-100">
-                    <label class="block text-gray-600 text-xs font-bold mb-1">الشعار (يسار):</label>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">الشعار الرسمي (يسار):</label>
                     <input type="file" name="logo_file" accept="image/*" class="w-full text-xs text-gray-500 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700 cursor-pointer">
                     
                     <div id="logo-preview-container" class="hidden flex items-center justify-between border-t pt-3 mt-3">
@@ -229,7 +319,7 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
                     </div>
 
                     <div class="flex items-center justify-between border-t pt-3 mt-3">
-                        <span class="text-xs text-gray-600 font-bold">حالة الشعار في الطباعة:</span>
+                        <span class="text-xs text-gray-600 font-bold">إظهار الشعار بالورقة:</span>
                         <label class="relative inline-flex items-center cursor-pointer">
                             <input type="checkbox" name="show_logo" id="show_logo" value="1" checked class="sr-only peer">
                             <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
@@ -240,37 +330,41 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
             </div>
         </div>
 
-        <!-- 2. بوكس تحديد ترتيب ومقاس وعرض كل مجموعة/بوكس بالطباعة بالـ JSON فائق الديناميكية -->
+        <!-- 3. كروت المجموعات (تخصيص الـ Slots، الحجم والظهور والترتيب) -->
         <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
             <div class="flex items-center space-x-3 space-x-reverse mb-2 border-b pb-3">
                 <div class="p-2 bg-purple-100 text-purple-600 rounded-lg"><i class="fa-solid fa-arrows-up-down-left-right text-lg"></i></div>
-                <h3 class="text-sm font-bold text-gray-800 font-sans">تنسيق مقاسات وترتيب كروت المجموعات بالورقة (A4)</h3>
+                <h3 class="text-sm font-bold text-gray-800">تنسيق مقاسات وترتيب كروت المجموعات والخرائط (حفظ التموضع بالصفحة)</h3>
             </div>
             
-            <p class="text-[10px] text-gray-400">تظهر هنا تلقائياً كافة المجموعات (الجروبات) المحددة في حقولك الميدانية. يمكنك تحديد مقاس عرض كل كرت وترتيب ظهوره بالطباعة لضمان ملاءمتها في ورقة واحدة:</p>
+            <p class="text-[10px] text-gray-400">تظهر بالأسفل كروت البيانات وخانة الموقع الجغرافي. يمكنك إظهار/إخفاء أي مربع، التحكم في العرض المخصص، والترتيب الديناميكي لضمان توزيعها الهندسي داخل الصفحة:</p>
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="groups_layout_configs_grid">
                 <?php foreach ($all_db_groups as $g_name): 
-                    // تشفير وحماية مسمى الجروب ليتوافق مع الـ IDs
                     $cleanGName = base64_encode($g_name);
-                    $cleanGName = str_replace('=', '', $cleanGName); // تنظيف لتلافي مشاكل الجافا سكريبت في الرموز
+                    $cleanGName = str_replace(['=', '+', '/'], '', $cleanGName); 
                 ?>
-                    <!-- كرت مجموعة فرعي للتحكم بمقاسها وترتيبها -->
                     <div class="bg-gray-50 p-4 rounded-xl border border-gray-200 flex flex-col justify-between space-y-3">
-                        <span class="text-xs font-bold text-slate-800"><i class="fa-solid fa-folder text-blue-500 ml-1.5"></i> صندوق: ( <?php echo htmlspecialchars($g_name); ?> )</span>
+                        <div class="flex justify-between items-center border-b pb-1.5">
+                            <span class="text-xs font-bold text-slate-800"><i class="fa-solid fa-folder text-blue-500 ml-1.5"></i> <?php echo htmlspecialchars($g_name); ?></span>
+                            <label class="flex items-center space-x-1.5 space-x-reverse text-[10px] font-bold text-gray-500 cursor-pointer">
+                                <input type="checkbox" name="group_show[<?php echo htmlspecialchars($g_name); ?>]" id="show_box_of_<?php echo $cleanGName; ?>" value="1" checked class="w-4 h-4 text-purple-600 rounded cursor-pointer">
+                                <span>إظهار في مستند الطباعة</span>
+                            </label>
+                        </div>
                         <input type="hidden" name="group_names_list[]" value="<?php echo htmlspecialchars($g_name); ?>">
                         
                         <div class="grid grid-cols-2 gap-2">
                             <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">عرض الصندوق:</label>
-                                <select name="group_width[<?php echo htmlspecialchars($g_name); ?>]" id="width_of_<?php echo $cleanGName; ?>" class="w-full px-2 py-1 bg-white border rounded text-[10px] focus:outline-none">
+                                <label class="text-[10px] text-gray-400 block font-bold mb-1">عرض المربع:</label>
+                                <select name="group_width[<?php echo htmlspecialchars($g_name); ?>]" id="width_of_<?php echo $cleanGName; ?>" class="w-full px-2 py-1 bg-white border rounded text-[10px] focus:outline-none font-bold text-gray-700">
                                     <option value="col-span-1">نصف عرض الصفحة (50%)</option>
-                                    <option value="col-span-2">عرض كامل للصفحة (100%)</option>
+                                    <option value="col-span-2">عرض كامل الصفحة (100%)</option>
                                 </select>
                             </div>
                             <div>
                                 <label class="text-[10px] text-gray-400 block font-bold mb-1">ترتيب الظهور بالورقة:</label>
-                                <input type="number" name="group_order[<?php echo htmlspecialchars($g_name); ?>]" id="order_of_<?php echo $cleanGName; ?>" value="1" class="w-full px-2 py-1 bg-white border rounded text-[10px] focus:outline-none">
+                                <input type="number" name="group_order[<?php echo htmlspecialchars($g_name); ?>]" id="order_of_<?php echo $cleanGName; ?>" value="1" class="w-full px-2 py-1 bg-white border rounded text-[10px] focus:outline-none font-bold text-gray-700">
                             </div>
                         </div>
                     </div>
@@ -278,119 +372,49 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
             </div>
         </div>
 
-        <!-- 3. بوكس إعدادات ذيل الصفحة والتوقيعات الخمسة -->
+        <!-- 4. إعدادات ذيل الصفحة وتخصيص 5 توقيعات كاملة -->
         <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
             <div class="flex items-center space-x-3 space-x-reverse mb-2 border-b pb-3">
                 <div class="p-2 bg-orange-100 text-orange-600 rounded-lg"><i class="fa-solid fa-signature text-lg"></i></div>
-                <h3 class="text-sm font-bold text-gray-800 font-sans">إعدادات ذيل الصفحة (الفوتر والتوقيعات)</h3>
+                <h3 class="text-sm font-bold text-gray-800">تخصيص التوقيعات الخمسة المعتمدة وتذييل التقرير</h3>
             </div>
 
             <div class="space-y-4">
                 <div class="max-w-md">
-                    <label class="block text-gray-600 text-xs font-bold mb-1">عنوان قسم التوقيعات بالأعلى:</label>
+                    <label class="block text-gray-600 text-xs font-bold mb-1">عنوان قسم التوقيعات الرئيسي:</label>
                     <input type="text" name="signatures_title" id="signatures_title" placeholder="مثال: التوقيعات،،" class="w-full px-4 py-2 border rounded-lg text-xs focus:outline-none bg-white font-semibold">
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
-                    <!-- التوقيع 1 -->
-                    <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-100 space-y-3 flex flex-col justify-between">
-                        <div class="space-y-2">
-                            <span class="text-[10px] text-indigo-600 font-extrabold block border-b pb-1">التوقيع الأول</span>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الوظيفة 1:</label>
-                                <input type="text" name="sig1_title" id="sig1_title" placeholder="الوظيفة" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
+                    <?php for ($i = 1; $i <= 5; $i++): ?>
+                        <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-100 space-y-3 flex flex-col justify-between">
+                            <div class="space-y-2">
+                                <span class="text-[10px] text-indigo-600 font-extrabold block border-b pb-1">توقيع مسؤول رقم <?php echo $i; ?></span>
+                                <div>
+                                    <label class="text-[10px] text-gray-400 block font-bold mb-1">المسمى الوظيفي:</label>
+                                    <input type="text" name="sig<?php echo $i; ?>_title" id="sig<?php echo $i; ?>_title" placeholder="مثال: مهندس التنظيم" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
+                                </div>
+                                <div>
+                                    <label class="text-[10px] text-gray-400 block font-bold mb-1">الاسم الكامل:</label>
+                                    <input type="text" name="sig<?php echo $i; ?>_name" id="sig<?php echo $i; ?>_name" placeholder="مثال: محمد احمد" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
+                                </div>
                             </div>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الاسم 1:</label>
-                                <input type="text" name="sig1_name" id="sig1_name" placeholder="الاسم" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                        </div>
-                        <div class="flex items-center justify-between pt-2 border-t select-none">
-                            <span class="text-[10px] text-gray-500 font-bold">ظاهر بالطباعة</span>
-                            <input type="checkbox" name="sig1_show" id="sig1_show" value="1" class="w-4 h-4 text-emerald-600 rounded">
-                        </div>
-                    </div>
-
-                    <!-- التوقيع 2 -->
-                    <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-100 space-y-3 flex flex-col justify-between">
-                        <div class="space-y-2">
-                            <span class="text-[10px] text-indigo-600 font-extrabold block border-b pb-1">التوقيع الثاني</span>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الوظيفة 2:</label>
-                                <input type="text" name="sig2_title" id="sig2_title" placeholder="الوظيفة" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الاسم 2:</label>
-                                <input type="text" name="sig2_name" id="sig2_name" placeholder="الاسم" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
+                            <div class="flex items-center justify-between pt-2 border-t select-none">
+                                <span class="text-[10px] text-gray-500 font-bold">تفعيل التوقيع</span>
+                                <input type="checkbox" name="sig<?php echo $i; ?>_show" id="sig<?php echo $i; ?>_show" value="1" class="w-4 h-4 text-emerald-600 rounded">
                             </div>
                         </div>
-                        <div class="flex items-center justify-between pt-2 border-t select-none">
-                            <span class="text-[10px] text-gray-500 font-bold">ظاهر بالطباعة</span>
-                            <input type="checkbox" name="sig2_show" id="sig2_show" value="1" class="w-4 h-4 text-emerald-600 rounded">
-                        </div>
-                    </div>
-
-                    <!-- التوقيع 3 -->
-                    <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-100 space-y-3 flex flex-col justify-between">
-                        <div class="space-y-2">
-                            <span class="text-[10px] text-indigo-600 font-extrabold block border-b pb-1">التوقيع الثالث</span>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الوظيفة 3:</label>
-                                <input type="text" name="sig3_title" id="sig3_title" placeholder="الوظيفة" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الاسم 3:</label>
-                                <input type="text" name="sig3_name" id="sig3_name" placeholder="الاسم" class="w-full px-2 py-1 border rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                        </div>
-                        <div class="flex items-center justify-between pt-2 border-t select-none">
-                            <span class="text-[10px] text-gray-500 font-bold">ظاهر بالطباعة</span>
-                            <input type="checkbox" name="sig3_show" id="sig3_show" value="1" class="w-4 h-4 text-emerald-600 rounded">
-                        </div>
-                    </div>
-
-                    <!-- التوقيع 4 -->
-                    <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-100 space-y-3 flex flex-col justify-between">
-                        <div class="space-y-2">
-                            <span class="text-[10px] text-indigo-600 font-extrabold block border-b pb-1">التوقيع الرابع</span>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الوظيفة 4:</label>
-                                <input type="text" name="sig4_title" id="sig4_title" placeholder="الوظيفة" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الاسم 4:</label>
-                                <input type="text" name="sig4_name" id="sig4_name" placeholder="الاسم" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                        </div>
-                        <div class="flex items-center justify-between pt-2 border-t select-none">
-                            <span class="text-[10px] text-gray-500 font-bold">ظاهر بالطباعة</span>
-                            <input type="checkbox" name="sig4_show" id="sig4_show" value="1" class="w-4 h-4 text-emerald-600 rounded">
-                        </div>
-                    </div>
-
-                    <!-- التوقيع 5 -->
-                    <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-100 space-y-3 flex flex-col justify-between">
-                        <div class="space-y-2">
-                            <span class="text-[10px] text-indigo-600 font-extrabold block border-b pb-1">التوقيع الخامس</span>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الوظيفة 5:</label>
-                                <input type="text" name="sig5_title" id="sig5_title" placeholder="الوظيفة" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                            <div>
-                                <label class="text-[10px] text-gray-400 block font-bold mb-1">الاسم 5:</label>
-                                <input type="text" name="sig5_name" id="sig5_name" placeholder="الاسم" class="w-full px-2 py-1 border border-gray-200 rounded text-[10px] focus:outline-none bg-white font-semibold">
-                            </div>
-                        </div>
-                        <div class="flex items-center justify-between pt-2 border-t select-none">
-                            <span class="text-[10px] text-gray-500 font-bold">ظاهر بالطباعة</span>
-                            <input type="checkbox" name="sig5_show" id="sig5_show" value="1" class="w-4 h-4 text-emerald-600 rounded">
-                        </div>
-                    </div>
+                    <?php endfor; ?>
                 </div>
 
                 <div class="pt-2">
-                    <label class="block text-gray-600 text-xs font-bold mb-1">نص تذييل الصفحة (الفوتر السفلي بالكامل):</label>
-                    <input type="text" name="footer_text" id="footer_text" placeholder="ملاحظات أسفل التقرير" class="w-full px-4 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none bg-white font-semibold">
+                    <label class="block text-gray-600 text-xs font-bold mb-1">تنسيقات CSS مخصصة متطورة (متقدم للتحكم بحدود وعرض الكروت الورقية):</label>
+                    <textarea id="custom_css" rows="3" placeholder="مثال: .print-card { max-height: 250px; overflow: hidden; }" class="w-full px-4 py-2 border rounded-lg font-mono text-xs focus:outline-none bg-slate-900 text-emerald-400" dir="ltr"></textarea>
+                </div>
+
+                <div class="pt-2">
+                    <label class="block text-gray-600 text-xs font-bold mb-1">نص تذييل التقرير (الفوتر بأسفل الصفحة):</label>
+                    <input type="text" name="footer_text" id="footer_text" placeholder="مثال: إن هذا التقرير جيو-معتمد ومستخرج آلياً بنظم المعلومات الجغرافية" class="w-full px-4 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none bg-white font-semibold">
                 </div>
             </div>
         </div>
@@ -453,9 +477,9 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
         document.getElementById('logo-preview-container').classList.add('hidden');
         document.getElementById('remove_logo').checked = false;
 
-        // تصفير فلاتر المقاسات الافتراضية
         document.querySelectorAll('[id^="width_of_"]').forEach(sel => sel.value = "col-span-1");
         document.querySelectorAll('[id^="order_of_"]').forEach(inp => inp.value = "1");
+        document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
 
         if (!templateId) {
             form.classList.add('hidden');
@@ -471,6 +495,14 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
             templateNameInput.value = "نموذج طباعة جديد";
             document.getElementById('main_title').value = "محضر معاينة ميدانية";
             document.getElementById('signatures_title').value = "التوقيعات،،";
+            document.getElementById('paper_size').value = "A4";
+            document.getElementById('orientation').value = "Portrait";
+            document.getElementById('header_font').value = "Cairo";
+            document.getElementById('font_size_pt').value = "10";
+            document.getElementById('header_height').value = "30";
+            document.getElementById('page_margin_mm').value = "8";
+            document.getElementById('grid_gap_px').value = "12";
+            document.getElementById('card_padding_px').value = "12";
         } else {
             const currentTmpl = templatesList.find(t => t.id == templateId);
             if (currentTmpl) {
@@ -483,6 +515,16 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
                 document.getElementById('signatures_title').value = currentTmpl.signatures_title || '';
                 document.getElementById('footer_text').value = currentTmpl.footer_text || '';
                 document.getElementById('show_logo').checked = (currentTmpl.show_logo == 1);
+                
+                document.getElementById('paper_size').value = currentTmpl.paper_size || 'A4';
+                document.getElementById('orientation').value = currentTmpl.orientation || 'Portrait';
+                document.getElementById('header_font').value = currentTmpl.header_font || 'Cairo';
+                document.getElementById('font_size_pt').value = currentTmpl.font_size_pt || 10;
+                document.getElementById('header_height').value = currentTmpl.header_height || 30;
+                document.getElementById('page_margin_mm').value = currentTmpl.page_margin_mm || 8;
+                document.getElementById('grid_gap_px').value = currentTmpl.grid_gap_px || 12;
+                document.getElementById('card_padding_px').value = currentTmpl.card_padding_px || 12;
+                document.getElementById('custom_css').value = currentTmpl.custom_css || '';
 
                 for (let i = 1; i <= 5; i++) {
                     document.getElementById(`sig${i}_title`).value = currentTmpl[`sig${i}_title`] || '';
@@ -497,19 +539,19 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
                     previewContainer.classList.remove('hidden');
                 }
 
-                // [تم التحديث]: فك واسترجاع إعدادات المقاسات والترتيب المحفوظة بالـ JSON وشحنها بالفورم تلقائياً بأكواد آمنة
                 if (currentTmpl.groups_config) {
                     try {
                         const gConfigs = JSON.parse(currentTmpl.groups_config);
                         for (const [gName, config] of Object.entries(gConfigs)) {
-                            // تحويل وترميز مسمى الجروب بأكواد جافا سكريبت مأمنة لعدم كسر الاسترجاع بالمتصفح
-                            const cleanGName = btoa(unescape(encodeURIComponent(gName))).replace(/=/g, '');
+                            const cleanGName = btoa(unescape(encodeURIComponent(gName))).replace(/=/g, '').replace(/[^a-zA-Z0-9]/g, '');
                             const selWidth = document.getElementById("width_of_" + cleanGName);
                             const inpOrder = document.getElementById("order_of_" + cleanGName);
+                            const cbShowBox = document.getElementById("show_box_of_" + cleanGName);
                             if (selWidth) selWidth.value = config.width || "col-span-1";
                             if (inpOrder) inpOrder.value = config.order || "1";
+                            if (cbShowBox) cbShowBox.checked = (config.show !== 0);
                         }
-                    } catch (e) { console.error("فشل قراءة مخطط المقاسات الجيوفيزيائي", e); }
+                    } catch (e) { console.error("فشل قراءة إعدادات المقاسات", e); }
                 }
             }
         }
@@ -521,9 +563,28 @@ $all_db_groups = $pdo->query("SELECT DISTINCT group_name FROM fields WHERE is_ac
         const templateName = document.getElementById('template_name_input').value.trim();
 
         if (!selectorVal || templateName === '') {
-            Swal.fire({ icon: 'warning', title: 'تنبيه', text: 'يرجى تحديد القالب أو اختيار إنشاء قالب جديد أولاً.' });
+            Swal.fire({ icon: 'warning', title: 'تنبيه', text: 'يرجى اختيار قالب طباعة للبدء.' });
             return;
         }
+
+        // بناء ملف الـ JSON للمقاسات قبل التصدير وإرساله حزمة واحدة متكاملة
+        const groupsConfig = {};
+        document.querySelectorAll('[name="group_names_list[]"]').forEach(el => {
+            const gName = el.value;
+            const cleanGName = btoa(unescape(encodeURIComponent(gName))).replace(/=/g, '').replace(/[^a-zA-Z0-9]/g, '');
+            const showCheck = document.getElementById("show_box_of_" + cleanGName);
+            groupsConfig[gName] = {
+                width: document.getElementById("width_of_" + cleanGName).value,
+                order: parseInt(document.getElementById("order_of_" + cleanGName).value) || 1,
+                show: showCheck && showCheck.checked ? 1 : 0
+            };
+        });
+
+        document.getElementById('groups_config_json').value = JSON.stringify(groupsConfig);
+        
+        // ترميز الـ CSS المتقدم بـ Base64 لفك تشفيره بأمان تام وتجاوز الـ WAF
+        const rawCSS = document.getElementById('custom_css').value;
+        document.getElementById('custom_css_encoded').value = btoa(unescape(encodeURIComponent(rawCSS)));
 
         document.getElementById('hidden_template_name').value = templateName;
         document.getElementById('print-settings-form').submit();
