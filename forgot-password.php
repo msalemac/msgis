@@ -1,12 +1,25 @@
 <?php
+// forgot-password.php - بوابة طلب استرجاع حساب الموظف الميداني (النسخة النهائية لبيئات PHP 8.4)
 require_once 'db.php';
+
+// التحقق من حالة الدخول المسبق وإرساله للموجه في حال كان مسجلاً بالفعال
+if (isset($_SESSION['user_id'])) {
+    header("Location: index.php");
+    exit;
+}
 
 $message = '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = trim($_POST['username']);
-    $email = trim($_POST['email']);
+    
+    // 1. التحقق الأمني الموحد لتوكن الجلسة CSRF لتأمين طلبات الاستعادة من الاختراق والـ Spam
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
+    }
+
+    $username = trim((string)($_POST['username'] ?? ''));
+    $email = trim((string)($_POST['email'] ?? ''));
 
     if (!empty($username) && !empty($email)) {
         try {
@@ -25,13 +38,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // إدراج طلب الاسترجاع معلق للمدير
                     $stmtIns = $pdo->prepare("INSERT INTO password_requests (username, email) VALUES (?, ?)");
                     $stmtIns->execute([$username, $email]);
+                    
+                    // تسجيل النشاط الأمني بالسجل الرقابي
+                    logActivity($pdo, "طلب استعادة حساب", "قام مستخدم مجهول بإرسال طلب استعادة للباسورد باسم الحساب: " . $username);
+
                     $message = "تم إرسال طلب استرجاع كلمة المرور بنجاح إلى مدير النظام. يرجى التواصل مع الإدارة لاستلام كلمة المرور الجديدة.";
                 }
             } else {
-                $error = "عذراً، البيانات المدخلة لا تطابق أي حساب مسجل بالنظام.";
+                $error = "عذراً، البيانات المدخلة لا تطابق أي حساب مسجل بالنظام الميداني.";
             }
-        } catch (PDOException $e) { $error = "حدث خطأ في النظام، حاول لاحقاً."; }
-    } else { $error = "يرجى ملء جميع الحقول المطلوبة."; }
+        } catch (PDOException $e) { 
+            $error = "حدث خطأ غير متوقع في النظام، حاول لاحقاً."; 
+        }
+    } else { 
+        $error = "يرجى ملء جميع الحقول المطلوبة لإرسال الطلب."; 
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -40,9 +61,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>استرجاع كلمة المرور - GIS Manager</title>
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
-    <!-- SweetAlert2 -->
+    
+    <!-- استدعاء مكتبة SweetAlert2 للتنبيه الجمالي المباشر -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style> body { font-family: 'Cairo', sans-serif; } </style>
 </head>
@@ -54,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 Swal.fire({
                     icon: 'success',
                     title: 'تم إرسال الطلب',
-                    text: '<?php echo $message; ?>',
+                    text: '<?php echo htmlspecialchars($message); ?>',
                     confirmButtonText: 'العودة لصفحة الدخول'
                 }).then(() => { window.location.href = 'login.php'; });
             });
@@ -74,13 +97,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form action="forgot-password.php" method="POST" class="space-y-4">
+            
+            <!-- حقل الأمان CSRF -->
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
+            
             <div>
                 <label class="block text-gray-700 text-xs font-semibold mb-1">اسم المستخدم</label>
-                <input type="text" name="username" required class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-left text-xs" dir="ltr">
+                <input type="text" name="username" required class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-left text-xs font-bold bg-white" dir="ltr">
             </div>
             <div>
                 <label class="block text-gray-700 text-xs font-semibold mb-1">البريد الإلكتروني المربوط بالحساب</label>
-                <input type="email" name="email" required class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-left text-xs" dir="ltr">
+                <input type="email" name="email" required class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-left text-xs font-bold bg-white" dir="ltr">
             </div>
 
             <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-xl transition duration-200 shadow-md text-xs">

@@ -1,5 +1,5 @@
 <?php
-// حماية الملف من الوصول المباشر
+// pages/profile-view.php - إدارة الملف الشخصي للمستخدم (النسخة النهائية الفائقة الأمان لبيئات PHP 8.4)
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
 }
@@ -8,9 +8,24 @@ $user_id = $_SESSION['user_id'];
 $message = '';
 $error = '';
 
-// [حل مشكلة اختفاء التنسيقات]: قراءة رسائل الجلسة المؤقتة ومسحها تلقائياً بعد العرض لثبات الواجهة
+// قراءة رسائل الجلسة الأمنية لثبات واستقرار التنبيهات الرسومية بعد التوجيه
 if (isset($_SESSION['profile_success_msg'])) { $message = $_SESSION['profile_success_msg']; unset($_SESSION['profile_success_msg']); }
 if (isset($_SESSION['profile_error_msg'])) { $error = $_SESSION['profile_error_msg']; unset($_SESSION['profile_error_msg']); }
+
+/**
+ * دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers في بيئة PHP 8.4
+ */
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+    }
+    exit;
+}
 
 // 1. جلب بيانات المستخدم الحالية للحقن المسبق بالنماذج
 try {
@@ -19,80 +34,87 @@ try {
     $user = $stmt->fetch();
 
     if (!$user) {
-        die("المستخدم غير موجود.");
+        die("المستخدم المطلوب غير موجود.");
     }
 } catch (PDOException $e) { 
-    die("حدث خطأ في قاعدة البيانات أثناء جلب بيانات الحساب."); 
+    die("حدث خطأ في قاعدة البيانات أثناء جلب بيانات الحساب: " . $e->getMessage()); 
 }
 
-// 2. معالجة وتحديث البيانات الشخصية وكلمة المرور (POST Update Handler)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_profile') {
-    $username = trim($_POST['username']);
-    $email = trim($_POST['email']);
-    $old_password = trim($_POST['old_password']);
-    $new_password = trim($_POST['new_password']);
-    $confirm_password = trim($_POST['confirm_password']);
-
-    if (!empty($username) && !empty($email)) {
-        try {
-            $update_ok = true;
-            
-            // جلب كلمة المرور المشفرة الحالية للتحقق منها
-            $stmtPass = $pdo->prepare("SELECT password FROM users WHERE id = ?");
-            $stmtPass->execute([$user_id]);
-            $current_hashed_pass = $stmtPass->fetchColumn();
-
-            // أ. في حال رغبة المستخدم في تغيير كلمة المرور الخاصة به
-            if (!empty($old_password) || !empty($new_password)) {
-                if (password_verify($old_password, $current_hashed_pass)) {
-                    if ($new_password === $confirm_password) {
-                        if (strlen($new_password) >= 6) {
-                            $new_hashed_password = password_hash($new_password, PASSWORD_BCRYPT);
-                            
-                            $stmtUp = $pdo->prepare("UPDATE users SET username = ?, email = ?, password = ? WHERE id = ?");
-                            $stmtUp->execute([$username, $email, $new_hashed_password, $user_id]);
-                            
-                            // توثيق التغيير الأمني بالسجل الرقابي الخاص بك
-                            logActivity($pdo, "تغيير بيانات وكلمة مرور", "قام المستخدم بتغيير بيانات حسابه الشخصي وتحديث كلمة المرور بنجاح.");
-                        } else { $update_ok = false; $_SESSION['profile_error_msg'] = "كلمة المرور الجديدة يجب ألا تقل عن 6 أحرف."; }
-                    } else { $update_ok = false; $_SESSION['profile_error_msg'] = "عذراً، كلمة المرور الجديدة وتأكيدها غير متطابقين."; }
-                } else { $update_ok = false; $_SESSION['profile_error_msg'] = "كلمة المرور الحالية المدخلة غير صحيحة."; }
-            } else {
-                // ب. تحديث الاسم والبريد فقط دون لمس كلمة المرور القديمة
-                $stmtUp = $pdo->prepare("UPDATE users SET username = ?, email = ? WHERE id = ?");
-                $stmtUp->execute([$username, $email, $user_id]);
-                
-                logActivity($pdo, "تعديل الملف الشخصي", "قام المستخدم بتحديث بيانات ملفه الشخصي (الاسم والبريد) بنجاح.");
-            }
-
-            if ($update_ok) {
-                $_SESSION['username'] = $username; // تحديث الجلسة بالاسم الجديد فوراً
-                $_SESSION['profile_success_msg'] = "تم حفظ وتحديث بيانات ملفك الشخصي بنجاح.";
-            }
-
-        } catch (PDOException $e) { 
-            $_SESSION['profile_error_msg'] = "عذراً، اسم المستخدم أو البريد مكرر ومسجل لحساب آخر."; 
-        }
-    } else { 
-        $_SESSION['profile_error_msg'] = "يرجى ملء جميع الحقول المطلوبة."; 
+// 2. معالجة وتحديث البيانات الشخصية وكلمة المرور تحت حماية CSRF المزدوجة
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // التحقق الأمني الإجباري من توكن حماية CSRF لمنع هجمات التزوير
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
     }
 
-    // [التحويل الفوري المضمون لمنع تعطل التنسيقات عند الحفظ والتحديث]
-    header("Location: index.php?page=profile-view");
-    exit;
+    if (isset($_POST['action']) && $_POST['action'] === 'update_profile') {
+        $username = trim((string)($_POST['username'] ?? ''));
+        $email = trim((string)($_POST['email'] ?? ''));
+        $old_password = trim((string)($_POST['old_password'] ?? ''));
+        $new_password = trim((string)($_POST['new_password'] ?? ''));
+        $confirm_password = trim((string)($_POST['confirm_password'] ?? ''));
+
+        if (!empty($username) && !empty($email)) {
+            try {
+                $update_ok = true;
+                
+                // جلب كلمة المرور المشفرة الحالية للتحقق منها
+                $stmtPass = $pdo->prepare("SELECT password FROM users WHERE id = ?");
+                $stmtPass->execute([$user_id]);
+                $current_hashed_pass = $stmtPass->fetchColumn();
+
+                // أ. في حال رغبة المستخدم في تغيير كلمة المرور الخاصة به
+                if (!empty($old_password) || !empty($new_password)) {
+                    if (password_verify($old_password, $current_hashed_pass)) {
+                        if ($new_password === $confirm_password) {
+                            if (strlen($new_password) >= 6) {
+                                $new_hashed_password = password_hash($new_password, PASSWORD_BCRYPT);
+                                
+                                $stmtUp = $pdo->prepare("UPDATE users SET username = ?, email = ?, password = ? WHERE id = ?");
+                                $stmtUp->execute([$username, $email, $new_hashed_password, $user_id]);
+                                
+                                // توثيق التغيير الأمني بالسجل الرقابي الخاص بك
+                                logActivity($pdo, "تغيير بيانات وكلمة مرور", "قام المستخدم بتغيير بيانات حسابه الشخصي وتحديث كلمة المرور بنجاح.");
+                            } else { $update_ok = false; $_SESSION['profile_error_msg'] = "كلمة المرور الجديدة يجب ألا تقل عن 6 أحرف."; }
+                        } else { $update_ok = false; $_SESSION['profile_error_msg'] = "عذراً، كلمة المرور الجديدة وتأكيدها غير متطابقين."; }
+                    } else { $update_ok = false; $_SESSION['profile_error_msg'] = "كلمة المرور الحالية المدخلة غير صحيحة."; }
+                } else {
+                    // ب. تحديث الاسم والبريد فقط دون لمس كلمة المرور القديمة
+                    $stmtUp = $pdo->prepare("UPDATE users SET username = ?, email = ? WHERE id = ?");
+                    $stmtUp->execute([$username, $email, $user_id]);
+                    
+                    logActivity($pdo, "تعديل الملف الشخصي", "قام المستخدم بتحديث بيانات ملفه الشخصي (الاسم والبريد) بنجاح.");
+                }
+
+                if ($update_ok) {
+                    $_SESSION['username'] = $username; // تحديث الجلسة بالاسم الجديد فوراً بالشرائط العلوية
+                    $_SESSION['profile_success_msg'] = "تم حفظ وتحديث بيانات ملفك الشخصي بنجاح.";
+                }
+
+            } catch (PDOException $e) { 
+                $_SESSION['profile_error_msg'] = "عذراً، اسم المستخدم أو البريد مكرر ومسجل لحساب آخر في النظام."; 
+            }
+        } else { 
+            $_SESSION['profile_error_msg'] = "يرجى ملء جميع الحقول المطلوبة لتحديث الحساب."; 
+        }
+
+        // التحويل الفوري المضمون لمنع تعطل التنسيقات عند الحفظ والتحديث
+        safeRedirect("index.php?page=profile-view");
+    }
 }
 ?>
 
-<!-- التنبيهات باستخدام SweetAlert2 الفاخرة المنسقة -->
+<!-- التنبيهات باستخدام SweetAlert2 -->
 <?php if (!empty($message)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تم التحديث', text: '<?php echo $message; ?>', confirmButtonText: 'حسناً' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تم التحديث', text: '<?php echo htmlspecialchars($message); ?>', confirmButtonText: 'حسناً' }); });</script>
 <?php endif; ?>
 <?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo $error; ?>' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo htmlspecialchars($error); ?>' }); });</script>
 <?php endif; ?>
 
-<!-- تصميم الصفحة المقسم لبوكسات جمالية متجاوبة بأسلوب الشياكة المعتمد -->
-<div class="max-w-5xl mx-auto space-y-6 animate-fade">
+<!-- تصميم الصفحة المقسم لبوكسات جمالية متجاوبة -->
+<div class="max-w-5xl mx-auto space-y-6 animate-fade text-right" dir="rtl">
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         
         <!-- الكرت الأيمن (عرض 1/3): بطاقة تعريفية مدمجة بالموظف وصلاحيته -->
@@ -129,16 +151,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             </div>
 
             <form action="index.php?page=profile-view" method="POST" class="space-y-4">
+                
+                <!-- حقل الأمان CSRF -->
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
                 <input type="hidden" name="action" value="update_profile">
                 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                         <label class="block text-gray-600 text-xs font-bold mb-1">اسم الحساب الخاص بك:</label>
-                        <input type="text" name="username" value="<?php echo htmlspecialchars($user['username']); ?>" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                        <input type="text" name="username" value="<?php echo htmlspecialchars($user['username']); ?>" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none bg-white font-bold" dir="ltr">
                     </div>
                     <div>
                         <label class="block text-gray-600 text-xs font-bold mb-1">البريد الإلكتروني المعتمد:</label>
-                        <input type="email" name="email" value="<?php echo htmlspecialchars($user['email']); ?>" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                        <input type="email" name="email" value="<?php echo htmlspecialchars($user['email']); ?>" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none bg-white font-bold" dir="ltr">
                     </div>
                 </div>
 
@@ -148,24 +173,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     
                     <div>
                         <label class="block text-gray-500 text-[10px] font-bold mb-1">كلمة المرور الحالية (المستخدمة الآن):</label>
-                        <input type="password" name="old_password" placeholder="••••••••" class="w-full bg-white px-4 py-1.5 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                        <input type="password" name="old_password" placeholder="••••••••" class="w-full bg-white px-4 py-1.5 border rounded-lg text-left text-xs focus:outline-none font-bold" dir="ltr">
                     </div>
                     
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-gray-500 text-[10px] font-bold mb-1">كلمة المرور الجديدة:</label>
-                            <input type="password" name="new_password" placeholder="6 أحرف على الأقل" class="w-full bg-white px-4 py-1.5 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                            <input type="password" name="new_password" placeholder="6 أحرف على الأقل" class="w-full bg-white px-4 py-1.5 border rounded-lg text-left text-xs focus:outline-none font-bold" dir="ltr">
                         </div>
                         <div>
                             <label class="block text-gray-500 text-[10px] font-bold mb-1">تأكيد كلمة المرور الجديدة:</label>
-                            <input type="password" name="confirm_password" placeholder="أدخل نفس الكلمة مجدداً" class="w-full bg-white px-4 py-1.5 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                            <input type="password" name="confirm_password" placeholder="أدخل نفس الكلمة مجدداً" class="w-full bg-white px-4 py-1.5 border rounded-lg text-left text-xs focus:outline-none font-bold" dir="ltr">
                         </div>
                     </div>
                 </div>
 
                 <div class="flex justify-end pt-2 border-t">
                     <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-6 rounded-xl transition text-xs shadow">
-                        <i class="fa-solid fa-floppy-disk ml-1"></i> حفظ وتحديث البيانات الشخصية
+                        <i class="fa-solid fa-floppy-disk text-white ml-1"></i> <span class="text-white">حفظ وتحديث البيانات الشخصية</span>
                     </button>
                 </div>
             </form>

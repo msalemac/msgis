@@ -1,91 +1,119 @@
 <?php
-// حماية الملف من الوصول المباشر
+// pages/reports-view.php - منشئ ومستخرج التقارير التفصيلية وجداول الحصر (النسخة النهائية لبيئات PHP 8.4)
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
 }
 
-$role = $_SESSION['role'];
-$allowed_types = !empty($_SESSION['allowed_types']) ? $_SESSION['allowed_types'] : '0';
+$role = isset($role) ? $role : ($_SESSION['role'] ?? 'user');
+$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', (string)$_SESSION['allowed_pages']) : [];
+
+// [صمام أمان حاسم]: حظر وطرد أي مستخدم عادي يحاول قراءة التقارير الحساسة دون تصريح صريح
+if ($role !== 'admin' && !in_array('reports-view', $user_allowed_pages)) {
+    die("عذراً، ليس لديك صلاحية الوصول إلى موديول منشئ التقارير.");
+}
 
 $message = '';
 $error = '';
 
-// قراءة رسائل الجلسة الأمنية لثبات واستقرار التنسيقات والتحويلات
+// قراءة رسائل الجلسة الأمنية لثبات واستقرار التنبيهات الرسومية
 if (isset($_SESSION['reports_success_msg'])) { $message = $_SESSION['reports_success_msg']; unset($_SESSION['reports_success_msg']); }
 if (isset($_SESSION['reports_error_msg'])) { $error = $_SESSION['reports_error_msg']; unset($_SESSION['reports_error_msg']); }
 
+/**
+ * دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers
+ */
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+    }
+    exit;
+}
+
 // ----------------- [1. الدوال الجغرافية الشاملة للفرز بحدود KML (Point-in-Polygon)] -----------------
 
-function parseKmlToPolygonPoints($kml_data) {
-    $polygon = [];
-    try {
-        $xml = simplexml_load_string($kml_data);
-        if ($xml) {
-            $xml->registerXPathNamespace('kml', 'http://www.opengis.net/kml/2.2');
-            $result = $xml->xpath('//kml:coordinates');
-            if (empty($result)) { $result = $xml->xpath('//coordinates'); }
-            
-            if (!empty($result)) {
-                $coordsText = trim((string)$result[0]);
-                $coordsArr = preg_split('/\s+/', $coordsText);
-                foreach ($coordsArr as $pointStr) {
-                    $parts = explode(',', $pointStr);
-                    if (count($parts) >= 2) {
-                        $lng = floatval($parts[0]); $lat = floatval($parts[1]);
-                        $polygon[] = ['lat' => $lat, 'lng' => $lng];
+if (!function_exists('parseKmlToPolygonPoints')) {
+    function parseKmlToPolygonPoints($kml_data) {
+        $polygon = [];
+        try {
+            $xml = simplexml_load_string($kml_data);
+            if ($xml) {
+                $xml->registerXPathNamespace('kml', 'http://www.opengis.net/kml/2.2');
+                $result = $xml->xpath('//kml:coordinates');
+                if (empty($result)) { $result = $xml->xpath('//coordinates'); }
+                
+                if (!empty($result)) {
+                    $coordsText = trim((string)$result[0]);
+                    $coordsArr = preg_split('/\s+/', $coordsText);
+                    foreach ($coordsArr as $pointStr) {
+                        $parts = explode(',', $pointStr);
+                        if (count($parts) >= 2) {
+                            $lng = floatval($parts[0]); $lat = floatval($parts[1]);
+                            $polygon[] = ['lat' => $lat, 'lng' => $lng];
+                        }
                     }
                 }
             }
-        }
-    } catch (Exception $e) {}
-    return $polygon;
+        } catch (Exception $e) {}
+        return $polygon;
+    }
 }
 
-function isPointInPolygon($lat, $lng, $polygon) {
-    $inside = false;
-    $numPoints = count($polygon);
-    if ($numPoints < 3) return false; // المضلع يجب ألا يقل عن 3 نقاط
-    
-    for ($i = 0, $j = $numPoints - 1; $i < $numPoints; $j = $i++) {
-        $xi = $polygon[$i]['lat']; $yi = $polygon[$i]['lng'];
-        $xj = $polygon[$j]['lat']; $yj = $polygon[$j]['lng'];
+if (!function_exists('isPointInPolygon')) {
+    function isPointInPolygon($lat, $lng, $polygon) {
+        $inside = false;
+        $numPoints = count($polygon);
+        if ($numPoints < 3) return false; 
         
-        $intersect = (($yi > $lng) != ($yj > $lng))
-            && ($lat < ($xj - $xi) * ($lng - $yi) / ($yj - $yi) + $xi);
-        if ($intersect) $inside = !$inside;
-    }
-    return $inside;
-}
-
-// ----------------- [2. معالجة عمليات الـ POST الخاصة بالتقارير المفضلة وحفظ القوالب] -----------------
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_favorite_report') {
-    $report_name = trim($_POST['report_name']);
-    $columns_config = trim($_POST['columns_config']);
-    $filters_config = trim($_POST['filters_config']);
-
-    if (!empty($report_name)) {
-        try {
-            $stmtInsFav = $pdo->prepare("INSERT INTO favorite_reports (report_name, columns_config, filters_config) VALUES (?, ?, ?)");
-            $stmtInsFav->execute([$report_name, $columns_config, $filters_config]);
+        for ($i = 0, $j = $numPoints - 1; $i < $numPoints; $j = $i++) {
+            $xi = $polygon[$i]['lat']; $yi = $polygon[$i]['lng'];
+            $xj = $polygon[$j]['lat']; $yj = $polygon[$j]['lng'];
             
-            logActivity($pdo, "حفظ تقرير مفضل", "قام المستخدم بحفظ قالب تقرير مفضل جديد باسم: " . $report_name);
-            $_SESSION['reports_success_msg'] = "تم حفظ وتثبيت التقرير المفضل بنجاح باسم: " . $report_name;
-        } catch (PDOException $e) { $_SESSION['reports_error_msg'] = "حدث خطأ أثناء حفظ التقرير المفضل."; }
+            $intersect = (($yi > $lng) != ($yj > $lng)) && ($lat < ($xj - $xi) * ($lng - $yi) / ($yj - $yi) + $xi);
+            if ($intersect) $inside = !$inside;
+        }
+        return $inside;
     }
-    header("Location: index.php?page=reports-view");
-    exit;
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_favorite_report') {
-    $fav_id = intval($_POST['fav_id']);
-    try {
-        $stmtDelFav = $pdo->prepare("DELETE FROM favorite_reports WHERE id = ?");
-        $stmtDelFav->execute([$fav_id]);
-        $_SESSION['reports_success_msg'] = "تم حذف قالب التقرير المفضل بنجاح من المنصة الكلية.";
-    } catch (PDOException $e) { $_SESSION['reports_error_msg'] = "فشل حذف التقرير المفضل."; }
-    header("Location: index.php?page=reports-view");
-    exit;
+// ----------------- [2. معالجة عمليات الـ POST الخاصة بالتقارير المفضلة وحفظ القوالب أمنياً] -----------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // التحقق الأمني الإجباري من توكن حماية CSRF لمنع هجمات التزوير
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
+    }
+
+    if (isset($_POST['action']) && $_POST['action'] === 'save_favorite_report') {
+        $report_name = trim((string)($_POST['report_name'] ?? ''));
+        $columns_config = trim((string)($_POST['columns_config'] ?? ''));
+        $filters_config = trim((string)($_POST['filters_config'] ?? ''));
+
+        if (!empty($report_name)) {
+            try {
+                $stmtInsFav = $pdo->prepare("INSERT INTO favorite_reports (report_name, columns_config, filters_config) VALUES (?, ?, ?)");
+                $stmtInsFav->execute([$report_name, $columns_config, $filters_config]);
+                
+                logActivity($pdo, "حفظ تقرير مفضل", "قام المستخدم بحفظ قالب تقرير مفضل جديد باسم: " . $report_name);
+                $_SESSION['reports_success_msg'] = "تم حفظ وتثبيت التقرير المفضل بنجاح باسم: " . $report_name;
+            } catch (PDOException $e) { $_SESSION['reports_error_msg'] = "حدث خطأ أثناء حفظ التقرير المفضل."; }
+        }
+        safeRedirect("index.php?page=reports-view");
+    }
+
+    if (isset($_POST['action']) && $_POST['action'] === 'delete_favorite_report') {
+        $fav_id = intval($_POST['fav_id'] ?? 0);
+        try {
+            $stmtDelFav = $pdo->prepare("DELETE FROM favorite_reports WHERE id = ?");
+            $stmtDelFav->execute([$fav_id]);
+            $_SESSION['reports_success_msg'] = "تم حذف قالب التقرير المفضل بنجاح من المنصة الكلية.";
+        } catch (PDOException $e) { $_SESSION['reports_error_msg'] = "فشل حذف التقرير المفضل."; }
+        safeRedirect("index.php?page=reports-view");
+    }
 }
 
 // ----------------- [3. استدعاء وجلب السجلات المفلترة والحدود الجغرافية والتقارير المفضلة] -----------------
@@ -94,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 $boundaries = $pdo->query("SELECT id, name, color, kml_data FROM boundaries ORDER BY id DESC")->fetchAll();
 $filter_boundary_id = isset($_GET['filter_boundary_id']) ? intval($_GET['filter_boundary_id']) : 0;
 
-// جلب السجلات المصرح للموظف برؤيتها
+// جلب السجلات المصرح للموظف برؤيتها فقط
 try {
     if ($role === 'admin') {
         $records_query = "
@@ -118,35 +146,39 @@ try {
         $stmt->execute([$allowed_types]);
     }
     $raw_records = $stmt->fetchAll();
-} catch (PDOException $e) { die("خطأ: " . $e->getMessage()); }
+} catch (PDOException $e) { die("خطأ في جلب السجلات: " . $e->getMessage()); }
 
 // [تنشيط الفرز الجغرافي]: تصفية السجلات التي تقع داخل مضلع الـ KML المختار حالياً
 $records = [];
 if ($filter_boundary_id > 0) {
-    // جلب الـ KML الخاص بالحي المختار
-    $selected_boundary_kml = $pdo->query("SELECT kml_data FROM boundaries WHERE id = " . $filter_boundary_id)->fetchColumn();
-    $polygon = parseKmlToPolygonPoints($selected_boundary_kml);
+    // جلب الـ KML الخاص بالحي المختار باستخدام الاستعلام الآمن المجهز
+    $stmtBoundKml = $pdo->prepare("SELECT kml_data FROM boundaries WHERE id = ?");
+    $stmtBoundKml->execute([$filter_boundary_id]);
+    $selected_boundary_kml = $stmtBoundKml->fetchColumn();
     
-    foreach ($raw_records as $rec) {
-        if ($rec['latitude'] && $rec['longitude']) {
-            if (isPointInPolygon(floatval($rec['latitude']), floatval($rec['longitude']), $polygon)) {
-                $records[] = $rec; // تمرير السجل فقط لو وقع داخل مضلع KML
+    if ($selected_boundary_kml) {
+        $polygon = parseKmlToPolygonPoints($selected_boundary_kml);
+        foreach ($raw_records as $rec) {
+            if ($rec['latitude'] && $rec['longitude']) {
+                if (isPointInPolygon(floatval($rec['latitude']), floatval($rec['longitude']), $polygon)) {
+                    $records[] = $rec; 
+                }
             }
         }
     }
 } else {
-    $records = $raw_records; // عرض الكل في حال عدم الفلترة بمضلع KML
+    $records = $raw_records; 
 }
 
-// ----------------- [تقسيم السجلات جغرافياً للصفحة الحالية (Array Pagination) لسرعة البرق] -----------------
+// تقسيم السجلات جغرافياً للصفحة الحالية (Array Pagination)
 $total_records = count($records);
-$limit = 20; // عرض 20 سجلاً فقط بالصفحة لضمان الخفة الفائقة وسرعة التحميل
+$limit = 20; 
 $total_pages = ceil($total_records / $limit);
 $current_page = isset($_GET['p_num']) ? max(1, intval($_GET['p_num'])) : 1;
 if ($current_page > $total_pages && $total_pages > 0) { $current_page = $total_pages; }
 $offset = ($current_page - 1) * $limit;
 
-// اقتطاع شريحة السجلات المعروضة للصفحة الحالية فقط
+// اقتطاع شريحة السجلات المعروضة للصفحة الحالية
 $paginated_records = array_slice($records, $offset, $limit);
 
 // جلب الأقسام والحقول المخصصة المتاحة للموظف لبناء فلاتر الجدول المعتمدة
@@ -166,9 +198,9 @@ if ($role === 'admin') {
 $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC")->fetchAll();
 ?>
 
-<div class="space-y-6">
+<div class="space-y-6 text-right animate-fade" dir="rtl">
 
-    <!-- كارت الأدوات وفلترة مضلعات KML والتقارير المفصلة والتخصيص والتصدير -->
+    <!-- كارت الأدوات وفلترة مضلعات KML والتقارير المفضلة والتصدير -->
     <div class="bg-white p-4 rounded-xl shadow-md border border-gray-100 flex flex-wrap items-center justify-between gap-3 bg-gray-50/50">
         
         <div class="flex flex-wrap items-center gap-3">
@@ -198,15 +230,15 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
         <div class="flex items-center gap-2">
             <!-- حفظ التنسيق الحالي كقالب مفضل -->
             <button onclick="saveCurrentLayoutAsFavorite()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm" title="حفظ شكل الفلاتر">
-                <i class="fa-solid fa-bookmark"></i>
-                <span>حفظ الاستعلام الحالي</span>
+                <i class="fa-solid fa-bookmark text-white"></i>
+                <span class="text-white">حفظ الاستعلام الحالي</span>
             </button>
 
             <!-- تخصيص الأعمدة المنسدلة -->
             <div class="relative inline-block text-right">
                 <button onclick="toggleColSelector()" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm">
-                    <i class="fa-solid fa-table-columns"></i>
-                    <span>تخصيص الأعمدة المعروضة</span>
+                    <i class="fa-solid fa-table-columns text-white"></i>
+                    <span class="text-white">تخصيص الأعمدة المعروضة</span>
                 </button>
                 <div id="col-selector-dropdown" class="absolute left-0 mt-2 w-64 rounded-xl shadow-2xl bg-white border border-gray-100 z-20 p-4 hidden text-gray-800 text-right">
                     <span class="block text-xs font-bold text-gray-700 border-b pb-1 mb-2">تحديد الأعمدة الظاهرة</span>
@@ -229,12 +261,12 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
             </div>
 
             <button onclick="exportExcelReport()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm">
-                <i class="fa-solid fa-file-excel text-sm"></i>
-                <span>تصدير تقرير XLS</span>
+                <i class="fa-solid fa-file-excel text-sm text-white"></i>
+                <span class="text-white">تصدير تقرير XLS</span>
             </button>
             <button onclick="printFilteredPDF()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm">
-                <i class="fa-solid fa-file-pdf text-sm"></i>
-                <span>تصدير تقرير PDF</span>
+                <i class="fa-solid fa-file-pdf text-sm text-white"></i>
+                <span class="text-white">تصدير تقرير PDF</span>
             </button>
         </div>
     </div>
@@ -255,6 +287,7 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
                         <?php foreach ($all_fields_for_columns as $f): ?>
                             <th data-column="col-<?php echo $f['field_name']; ?>" class="px-6 py-3 hidden text-purple-600 font-bold"><?php echo htmlspecialchars($f['label']); ?></th>
                         <?php endforeach; ?>
+                        <th class="px-6 py-3 text-center no-print w-28 font-bold">الإجراءات</th>
                     </tr>
 
                     <!-- صف البحث والفلترة لكل عمود بشكل مستقل تماماً بالربط المعرفي -->
@@ -291,26 +324,26 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
                                 </div>
                             </td>
                         <?php endforeach; ?>
+                        <td class="p-2 no-print"></td>
                     </tr>
                 </thead>
-                <!-- ملحوظة: تم تعديل حلقة الدوران لتعرض فقط الـ 20 سجلاً المفرزة للصفحة الحالية لضمان سرعة فائقة بالتحميل -->
-                <tbody id="table-body" class="bg-white divide-y divide-gray-100 text-[11px] text-gray-600">
+                <tbody id="table-body" class="bg-white divide-y divide-gray-100 text-[11px] text-slate-900 font-bold">
                     <?php foreach ($paginated_records as $rec): ?>
                         <tr class="record-row hover:bg-gray-50/50 transition">
-                            <td data-column="col-id" class="px-6 py-4 font-mono font-bold text-gray-400">#<?php echo $rec['id']; ?></td>
-                            <td data-column="col-type" class="px-6 py-4 font-bold text-slate-700">
+                            <td data-column="col-id" class="px-6 py-4 font-mono font-bold text-gray-500">#<?php echo $rec['id']; ?></td>
+                            <td data-column="col-type" class="px-6 py-4 font-black text-slate-800">
                                 <span class="inline-block w-2.5 h-2.5 rounded-full ml-1.5" style="background-color: <?php echo $rec['color'] ?: '#3085d6'; ?>;"></span>
                                 <?php echo htmlspecialchars($rec['type_label']); ?>
                             </td>
-                            <td data-column="col-user" class="px-6 py-4 font-semibold"><?php echo htmlspecialchars($rec['username']); ?></td>
-                            <td data-column="col-coords" class="px-6 py-4 font-mono text-[10px]">
+                            <td data-column="col-user" class="px-6 py-4 font-extrabold text-slate-800"><?php echo htmlspecialchars($rec['username']); ?></td>
+                            <td data-column="col-coords" class="px-6 py-4 font-mono text-[10px] text-slate-700">
                                 <?php if ($rec['latitude'] && $rec['longitude']): ?>
                                     <span>Lat: <?php echo round($rec['latitude'], 5); ?>, Lng: <?php echo round($rec['longitude'], 5); ?></span>
                                 <?php else: ?>
                                     <span class="text-gray-400">غير محدد</span>
                                 <?php endif; ?>
                             </td>
-                            <td data-column="col-attachments" class="px-6 py-4 space-x-1 space-x-reverse">
+                            <td data-column="col-attachments" class="px-6 py-4 space-x-1 space-x-reverse no-print">
                                 <?php if ($rec['photo_path']): ?>
                                     <span class="bg-amber-100 text-amber-800 text-[10px] font-bold px-1.5 py-0.5 rounded-full">صورة</span>
                                 <?php endif; ?>
@@ -318,36 +351,58 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
                                     <span class="bg-red-100 text-red-800 text-[10px] font-bold px-1.5 py-0.5 rounded-full">PDF</span>
                                 <?php endif; ?>
                             </td>
-                            <td data-column="col-date" class="px-6 py-4 text-gray-400 font-semibold"><?php echo date('Y-m-d H:i', strtotime($rec['created_at'])); ?></td>
+                            <td data-column="col-date" class="px-6 py-4 text-slate-500 font-bold"><?php echo date('Y-m-d H:i', strtotime($rec['created_at'])); ?></td>
                             
                             <?php 
                             $dyn_vals = json_decode($rec['dynamic_values'], true) ?: [];
                             foreach ($all_fields_for_columns as $f): 
-                                $val = isset($dyn_vals[$f['field_name']]) ? $dyn_vals[$f['field_name']] : '-';
+                                // حماية تفريغ البيانات من الانهيار عند التحويل لـ string ببيئات PHP 8.4
+                                $val = isset($dyn_vals[$f['field_name']]) ? (string)$dyn_vals[$f['field_name']] : '-';
                             ?>
-                                <td data-column="col-<?php echo $f['field_name']; ?>" class="px-6 py-4 hidden font-bold text-gray-700" data-value="<?php echo htmlspecialchars($val); ?>"><?php echo htmlspecialchars($val); ?></td>
+                                <td data-column="col-<?php echo $f['field_name']; ?>" class="px-6 py-4 hidden font-black text-slate-900" data-value="<?php echo htmlspecialchars($val); ?>">
+                                    <?php if ($val === 'نعم'): ?>
+                                        <span class="text-emerald-700"><i class="fa-solid fa-circle-check ml-1 text-emerald-600"></i> نعم</span>
+                                    <?php elseif ($val === 'لا'): ?>
+                                        <span class="text-red-700"><i class="fa-solid fa-circle-xmark ml-1 text-red-500"></i> لا</span>
+                                    <?php else: ?>
+                                        <?php echo htmlspecialchars($val); ?>
+                                    <?php endif; ?>
+                                </td>
                             <?php endforeach; ?>
+
+                            <td class="px-6 py-4 text-center space-x-1.5 space-x-reverse font-sans no-print w-28">
+                                <a href="index.php?page=view-record&id=<?php echo $rec['id']; ?>" class="inline-flex items-center p-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg transition" title="عرض السجل">
+                                    <i class="fa-solid fa-eye text-xs text-blue-600"></i>
+                                </a>
+                                <?php if ($rec['latitude'] && $rec['longitude']): ?>
+                                    <a href="index.php?page=map-view&highlight=<?php echo $rec['id']; ?>" class="inline-flex items-center p-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg transition" title="تحديد بالخريطة">
+                                        <i class="fa-solid fa-map-location-dot text-xs text-emerald-600"></i>
+                                    </a>
+                                <?php else: ?>
+                                    <span class="inline-flex items-center p-2 bg-gray-50 text-gray-300 rounded-lg cursor-not-allowed" title="لا توجد إحداثيات">
+                                        <i class="fa-solid fa-map-location-dot text-xs text-gray-300"></i>
+                                    </span>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
 
-        <!-- [تحديث إستراتيجي]: شريط التنقل الرقمي والتقسيم لصفحات (Pagination Bar) لسرعة لا تصدق في تحميل المتصفحات وبأعلى جودة -->
+        <!-- شريط التنقل الرقمي والتقسيم لصفحات (Pagination Bar) -->
         <?php if ($total_pages > 1): ?>
             <div class="bg-gray-50 px-6 py-4 flex items-center justify-between border-t border-gray-150 select-none text-xs">
                 <div class="text-gray-550 font-semibold">
                     عرض المعاينات من <span class="font-bold text-slate-800 font-sans"><?php echo $offset + 1; ?></span> إلى <span class="font-bold text-slate-800 font-sans"><?php echo min($offset + $limit, $total_records); ?></span> من إجمالي <span class="font-bold text-slate-800 font-sans"><?php echo $total_records; ?></span> سجل موثق.
                 </div>
                 <div class="flex items-center space-x-1.5 space-x-reverse font-bold font-sans">
-                    <!-- زر السابق -->
                     <?php if ($current_page > 1): ?>
                         <a href="index.php?page=reports-view&p_num=<?php echo $current_page - 1; ?>&filter_boundary_id=<?php echo $filter_boundary_id; ?>" class="px-3 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 rounded-lg transition">&laquo; السابق</a>
                     <?php else: ?>
                         <span class="px-3 py-1.5 border border-gray-150 bg-gray-100 text-gray-400 rounded-lg cursor-not-allowed">&laquo; السابق</span>
                     <?php endif; ?>
 
-                    <!-- أرقام الصفحات الذكية -->
                     <?php 
                     $start_page = max(1, $current_page - 2);
                     $end_page = min($total_pages, $current_page + 2);
@@ -356,7 +411,6 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
                         <a href="index.php?page=reports-view&p_num=<?php echo $i; ?>&filter_boundary_id=<?php echo $filter_boundary_id; ?>" class="px-3 py-1.5 border rounded-lg transition <?php echo $i === $current_page ? 'bg-blue-600 border-blue-600 text-white shadow-sm' : 'border-gray-200 bg-white hover:bg-gray-50 text-gray-700'; ?>"><?php echo $i; ?></a>
                     <?php endfor; ?>
 
-                    <!-- زر التالي -->
                     <?php if ($current_page < $total_pages): ?>
                         <a href="index.php?page=reports-view&p_num=<?php echo $current_page + 1; ?>&filter_boundary_id=<?php echo $filter_boundary_id; ?>" class="px-3 py-1.5 border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 rounded-lg transition">التالي &raquo;</a>
                     <?php else: ?>
@@ -373,8 +427,9 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
     </div>
 </div>
 
-<!-- نموذج إرسال لحفظ التقرير المفضل POST -->
+<!-- نموذج إرسال لحفظ التقرير المفضل POST (محدث بالـ CSRF Token) -->
 <form id="save-favorite-form" method="POST" action="index.php?page=reports-view" class="hidden">
+    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
     <input type="hidden" name="action" value="save_favorite_report">
     <input type="hidden" name="report_name" id="fav_report_name">
     <input type="hidden" name="columns_config" id="fav_columns_config">
@@ -463,7 +518,7 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
         if (!fav) return;
 
         const allPossibleCols = ['col-id', 'col-type', 'col-user', 'col-coords', 'col-attachments', 'col-date'];
-        dynamicColumns.forEach(f => { columns.push('col-' + f.field_name); });
+        dynamicColumns.forEach(f => { allPossibleCols.push('col-' + f.field_name); });
 
         allPossibleCols.forEach(col => {
             document.querySelectorAll(`[data-column="${col}"]`).forEach(el => el.classList.add('hidden'));
@@ -539,8 +594,9 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
             
             for (let j = 0; j < headers.length; j++) {
                 const colName = headers[j].getAttribute('data-column');
-                const isColHidden = headers[j].classList.contains('hidden');
+                if (!colName) continue; 
                 
+                const isColHidden = headers[j].classList.contains('hidden');
                 if (isColHidden) continue;
 
                 const input = table.querySelector(`.col-search-input[data-filter-for="${colName}"]`);
@@ -622,7 +678,6 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
         });
     }
 
-    // تصدير PDF المنسق لجدول التقارير
     function printFilteredPDF() {
         const printWindow = window.open('', '_blank');
         const tableHTML = document.getElementById('main-records-table').outerHTML;
@@ -655,6 +710,7 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
 
         headers.forEach((th) => {
             const colName = th.getAttribute('data-column');
+            if (!colName) return; 
             const isColHidden = th.classList.contains('hidden');
 
             if (isColHidden) return;
@@ -672,14 +728,12 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
         window.location.href = 'index.php?' + urlParams.toString();
     }
 
-    // دالة تحديث شريط الحالة السفلي وحساب المساحات المعروضة تلقائياً بالصفحة الحالية فقط
     function updateStatusBar() {
         const table = document.getElementById('main-records-table');
         const rows = table.getElementsByClassName('record-row');
         let visibleCount = 0;
         let totalArea = 0;
 
-        // التحقق مما إذا كان عمود المساحة (area_size) ظاهراً حالياً للقيام بالحسابات التلقائية
         const areaColHeader = table.querySelector('thead th[data-column="col-area_size"]');
         const isAreaVisible = areaColHeader ? !areaColHeader.classList.contains('hidden') : false;
 
@@ -699,10 +753,8 @@ $favorite_reports = $pdo->query("SELECT * FROM favorite_reports ORDER BY id DESC
             }
         }
 
-        // تحديث الرقم في عنصر العداد للمطابقات الظاهرة فقط بالصفحة
         document.getElementById('status-count').innerText = visibleCount;
 
-        // تحديث قيم شريط الحسابات للمساحة إذا كان العمود ظاهراً ولدينا سجلات
         const calcBox = document.getElementById('status-calculations');
         if (isAreaVisible && visibleCount > 0) {
             calcBox.innerHTML = `<div><i class="fa-solid fa-chart-area text-emerald-400 ml-1"></i> إجمالي المساحة الظاهرة بالصفحة: <span class="text-white font-bold font-sans">${totalArea.toLocaleString()}</span> م²</div>`;

@@ -1,16 +1,13 @@
 <?php
-// 1. بدء الجلسة في أول السطر قبل أي مخرجات
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+// index.php - الموجه المركزي الجغرافي المطور (النسخة النهائية الفائقة الأمان والاتزان لبيئات PHP 8.4)
 
-// 2. ترويسة منع الكاش القياسية والأكثر توافقاً مع السيرفرات والمتصفحات
+// 1. استدعاء ملف النواة والإعدادات وقاعدة البيانات في مطلع الملف لضمان تشغيل الجلسة بأعلى معايير الأمان المكتوبة بـ config.php
+require_once 'db.php';
+
+// 2. ترويسة منع الكاش القياسية والأكثر توافقاً مع المتصفحات لضمان تحديث البيانات جغرافياً
 header("Cache-Control: no-cache, no-store, must-revalidate"); // متوافق مع HTTP 1.1
 header("Pragma: no-cache");                                   // متوافق مع HTTP 1.0
 header("Expires: 0");                                         // لضمان انتهاء الصلاحية فوراً للبروكسي
-
-// استدعاء ملف قاعدة البيانات
-require_once 'db.php';
 
 // 3. حماية النظام والتحقق من تسجيل الدخول
 if (!isset($_SESSION['user_id'])) {
@@ -21,7 +18,7 @@ if (!isset($_SESSION['user_id'])) {
 // 4. استخراج وتعريف متغيرات الجلسة والصلاحيات الأساسية مبكراً لتكون متاحة لجميع الصفحات المضمنة
 $role = isset($_SESSION['role']) ? $_SESSION['role'] : 'user';
 $allowed_types = !empty($_SESSION['allowed_types']) ? $_SESSION['allowed_types'] : '0';
-$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', $_SESSION['allowed_pages']) : [];
+$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', (string)$_SESSION['allowed_pages']) : [];
 
 // ----------------- [حلول الاستيراد والتصدير والنسخ والرقابة - الاعتراض قبل الـ HTML] -----------------
 
@@ -56,7 +53,7 @@ if (isset($_GET['action']) && in_array($_GET['action'], ['download_sql', 'downlo
 }
 
 // 5. تحديد الصفحة الحالية والصفحات المسموح بالوصول إليها
-$page = isset($_GET['page']) ? $_GET['page'] : 'home-view';
+$page = isset($_GET['page']) ? trim((string)$_GET['page']) : 'home-view';
 $allowed_pages = [
     'home-view',      
     'add-record', 
@@ -72,9 +69,10 @@ $allowed_pages = [
     'backup-view',
     'import-view', 
     'export-view', 
-    'transfers-view', // تسجيل موديول الصادر والوارد الجديد برمجياً
+    'transfers-view', 
     'audit-logs',
-    'profile-view'
+    'profile-view',
+    'data-repair' 
 ];
 
 if (!in_array($page, $allowed_pages)) { 
@@ -95,12 +93,13 @@ if ($role !== 'admin') {
     }
 }
 
-$admin_only_pages = ['settings-view', 'users-view', 'print-settings', 'backup-view', 'import-view', 'export-view', 'audit-logs'];
+// قصر صفحات التحكم الفنية والسرية والنسخ الاحتياطي وإصلاح البيانات على الأدمن فقط
+$admin_only_pages = ['settings-view', 'users-view', 'print-settings', 'backup-view', 'import-view', 'export-view', 'audit-logs', 'data-repair'];
 if (in_array($page, $admin_only_pages) && $role !== 'admin') { 
     $page = 'home-view'; 
 }
 
-// 7. [الاعتراض العام الذكي لجميع طلبات POST] - تم نقله هنا لضمان معرفة صلاحيات المستخدم والـ Role قبل المعالجة
+// 7. [الاعتراض العام الذكي لجميع طلبات POST] - يستدعي معالجة العمليات ويقطع التنفيذ فوراً لتجنب تشوه الواجهة
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (in_array($page, $allowed_pages)) {
         include "pages/{$page}.php";
@@ -141,9 +140,10 @@ $titles = [
     'backup-view'    => 'مركز النسخ الاحتياطي واسترجاع النظام الكلي',
     'import-view'    => 'معالج استيراد البيانات وتنزيل القوالب المعتمدة',
     'export-view'    => 'مركز تصدير البيانات الجغرافية والتقارير KML',
-    'transfers-view' => 'مركز إدارة الصادر والوارد والحركة المستندية', // ترويسة عنوان موديول الصادر والوارد
+    'transfers-view' => 'مركز إدارة الصادر والوارد والحركة المستندية', 
     'audit-logs'     => 'سجل رقابة العمليات والأنشطة الإدارية',
-    'profile-view'   => 'إدارة وتحديث بيانات ملفك الشخصي'
+    'profile-view'   => 'إدارة وتحديث بيانات ملفك الشخصي',
+    'data-repair'    => 'محرك استعلام وإصلاح وتطهير البيانات الفوري' 
 ];
 $pageTitle = isset($titles[$page]) ? $titles[$page] : 'لوحة التحكم';
 

@@ -1,9 +1,30 @@
-# تعطيل فحص جدار حماية السيرفر ModSecurity لتجنب حظر إرسال الاستمارات البرمجية
-<IfModule mod_security.c>
-  SecFilterEngine Off
-  SecFilterScanPOST Off
-</IfModule>
+# ----------------------------------------------------------------------
+# ملف .htaccess المطور لتأمين وتحسين أداء خادم منصة GIS MANAGER
+# ----------------------------------------------------------------------
 
-<IfModule mod_security2.c>
-  SecRuleEngine Off
+# 1. منع تصفح واستعراض المجلدات والملفات المادية من قبل المتصفحين (Directory Browsing)
+Options -Indexes
+
+# 2. حماية ملفات الإعدادات والاتصال الحساسة من القراءة والوصول الخارجي المباشر
+<Files "config.php">
+  Order Allow,Deny
+  Deny from all
+</Files>
+
+<Files "db.php">
+  Order Allow,Deny
+  Deny from all
+</Files>
+
+# 3. حماية ملفات قواعد البيانات والمرفقات السحابية والنسخ الاحتياطية
+<FilesMatch "\.(sql|zip|log|ini)$">
+  Order Allow,Deny
+  Deny from all
+</FilesMatch>
+
+# 4. تفعيل ترويسات حماية المتصفحات الإضافية ضد ثغرات الـ Clickjacking والـ XSS
+<IfModule mod_headers.c>
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set X-XSS-Protection "1; mode=block"
+  Header set X-Content-Type-Options "nosniff"
 </IfModule>

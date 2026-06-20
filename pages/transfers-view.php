@@ -1,4 +1,5 @@
 <?php
+// pages/transfers-view.php - مركز إدارة الصادر والوارد وسلسلة الحيازة (النسخة النهائية المؤمنة والمطورة كلياً)
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
 }
@@ -7,7 +8,7 @@ $role = $_SESSION['role'];
 $allowed_types = !empty($_SESSION['allowed_types']) ? $_SESSION['allowed_types'] : '0';
 $user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', $_SESSION['allowed_pages']) : [];
 
-// [صمام الأمان]: التحقق أمنياً من رتبة المستخدم وصلاحياته قبل تحميل الصفحة
+// التحقق أمنياً من رتبة المستخدم وصلاحياته قبل تحميل الصفحة
 if ($role !== 'admin' && !in_array('transfers-view', $user_allowed_pages)) {
     die("عذراً، ليس لديك صلاحية دخول موديول الصادر والوارد.");
 }
@@ -19,14 +20,35 @@ $error = '';
 if (isset($_SESSION['transfers_success_msg'])) { $message = $_SESSION['transfers_success_msg']; unset($_SESSION['transfers_success_msg']); }
 if (isset($_SESSION['transfers_error_msg'])) { $error = $_SESSION['transfers_error_msg']; unset($_SESSION['transfers_error_msg']); }
 
-// ----------------- [1. معالجة عمليات الـ POST الخاصة بالتحويلات] -----------------
+/**
+ * دالة إعادة التوجيه الفائقة والمقاومة للتعليق البرمجي وتكرار إرسال النماذج
+ */
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+        echo "<noscript><meta http-equiv='refresh' content='0;url=" . $url . "'></noscript>";
+    }
+    exit;
+}
+
+// ----------------- [1. معالجة عمليات الـ POST الخاصة بالتحويلات أمنياً] -----------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    // التحقق الأمني الإجباري من توكن حماية CSRF لمنع طلبات التزوير الخارجية
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً.");
+    }
 
     // أ. معالجة طلب تصدير صادر جماعي جديد (قادم من records-manage)
     if (isset($_POST['action']) && $_POST['action'] === 'create_transfer') {
-        $selected_ids_str = trim($_POST['selected_ids']);
-        $receiver_dept = trim($_POST['receiver_dept']);
-        $notes = trim($_POST['notes']);
+        $selected_ids_str = trim($_POST['selected_ids'] ?? '');
+        $receiver_dept = trim($_POST['receiver_dept'] ?? '');
+        $notes = trim($_POST['notes'] ?? '');
 
         if (!empty($selected_ids_str) && !empty($receiver_dept)) {
             try {
@@ -44,7 +66,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // إدراج شحنة الصادر بجدول التنقلات
                 $stmt = $pdo->prepare("INSERT INTO record_transfers (record_ids, sender_dept, receiver_dept, operator_id, status, notes) VALUES (?, ?, ?, ?, 'pending', ?)");
                 $stmt->execute([$selected_ids_str, $sender_dept, $receiver_dept, $_SESSION['user_id'], $notes]);
-                $transfer_id = $pdo->lastInsertId();
 
                 // تحديث حقل "حالة السجل" JSON تلقائياً لجميع السجلات المحددة دفعة واحدة بالنظام
                 $clean_ids = implode(',', array_map('intval', $id_arr));
@@ -58,20 +79,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $_SESSION['transfers_error_msg'] = "البيانات المرسلة مفقودة.";
         }
-        header("Location: index.php?page=transfers-view");
-        exit;
+        safeRedirect("index.php?page=transfers-view");
     }
 
-    // ب. معالجة اعتماد واستلام وارد معلق ونقل حيازته للإدارة الجديدة تلقائياً
+    // ب. معالجة اعتماد واستلام وارد معلق ونقل حيازته وتوثيق الموظف المستلم بالاسم والثانية
     if (isset($_POST['action']) && $_POST['action'] === 'approve_transfer') {
-        $transfer_id = intval($_POST['transfer_id']);
+        $transfer_id = intval($_POST['transfer_id'] ?? 0);
         
         try {
             $transfer = $pdo->query("SELECT * FROM record_transfers WHERE id = " . $transfer_id)->fetch();
             
             if ($transfer) {
-                // تحديث حالة المعاملة بجدول الصادر والوارد إلى (مستلم ومكتمل)
-                $pdo->exec("UPDATE record_transfers SET status = 'approved' WHERE id = " . $transfer_id);
+                // جلب بيانات الموظف الحالي المستلم لتوثيقه بالاسم والتاريخ بالأرشيف
+                $receiver_name = $_SESSION['username'] ?? 'موظف مجهول';
+                $old_notes = $transfer['notes'] ? trim($transfer['notes']) : '';
+                $updated_notes = "[تم الاستلام بواسطة: {$receiver_name} في " . date('Y-m-d H:i') . "]";
+                if ($old_notes !== '') {
+                    $updated_notes .= " - ملاحظات: " . $old_notes;
+                }
+
+                // تحديث حالة المعاملة والملاحظات المدمجة بجدول الصادر والوارد
+                $stmtUp = $pdo->prepare("UPDATE record_transfers SET status = 'approved', notes = ? WHERE id = ?");
+                $stmtUp->execute([$updated_notes, $transfer_id]);
 
                 // تحديث حقل "حالة السجل" JSON تلقائياً في السجلات ليتحول إلى (مستلم وفي الحيازة الحالية)
                 $id_arr = explode(',', $transfer['record_ids']);
@@ -82,10 +111,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['transfers_success_msg'] = "تم تأكيد واستلام المعاملات الواردة بنجاح، وتحديث حالتها القانونية آلياً بالنظام.";
             }
         } catch (PDOException $e) {
-            $_SESSION['transfers_error_msg'] = "فشل تأكيد واستلام الشحنة الواردة.";
+            $_SESSION['transfers_error_msg'] = "فشل تأكيد واستلام الشحنة الواردة برقم المعاملة.";
         }
-        header("Location: index.php?page=transfers-view");
-        exit;
+        safeRedirect("index.php?page=transfers-view");
     }
 }
 
@@ -109,9 +137,9 @@ $types = $pdo->query("SELECT * FROM record_types ORDER BY id DESC")->fetchAll();
 $where_clauses = ["rt.status = 'approved'"];
 $paramsExp = [];
 
-$filter_receiver_dept = isset($_GET['filter_receiver_dept']) ? trim($_GET['filter_receiver_dept']) : '';
-$date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-$date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+$filter_receiver_dept = isset($_GET['filter_receiver_dept']) ? trim((string)$_GET['filter_receiver_dept']) : '';
+$date_from = isset($_GET['date_from']) ? trim((string)$_GET['date_from']) : '';
+$date_to = isset($_GET['date_to']) ? trim((string)$_GET['date_to']) : '';
 
 if (!empty($filter_receiver_dept)) {
     $where_clauses[] = "rt.receiver_dept = ?";
@@ -144,15 +172,15 @@ $count_pending = count($pending_transfers);
 $count_approved = count($approved_transfers);
 ?>
 
-<!-- التنبيهات -->
+<!-- التنبيهات بـ SweetAlert -->
 <?php if (!empty($message)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تمت العملية', text: '<?php echo $message; ?>', confirmButtonText: 'حسناً' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تمت العملية', text: '<?php echo htmlspecialchars($message); ?>', confirmButtonText: 'حسناً' }); });</script>
 <?php endif; ?>
 <?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'خطأ في المعاملة', text: '<?php echo $error; ?>', confirmButtonText: 'حسناً' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'خطأ في المعاملة', text: '<?php echo htmlspecialchars($error); ?>', confirmButtonText: 'حسناً' }); });</script>
 <?php endif; ?>
 
-<div class="space-y-6 max-w-5xl mx-auto animate-fade">
+<div class="space-y-6 max-w-5xl mx-auto animate-fade text-right" dir="rtl">
     
     <!-- الكروت الإحصائية العلوية العصرية -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -227,7 +255,9 @@ $count_approved = count($approved_transfers);
                                 <td class="px-6 py-4 text-gray-400"><?php echo htmlspecialchars($t['notes'] ?: '-'); ?></td>
                                 <td class="px-6 py-4 font-mono text-gray-400"><?php echo date('Y-m-d H:i', strtotime($t['created_at'])); ?></td>
                                 <td class="px-6 py-4 text-center">
+                                    <!-- تمرير الـ CSRF Token وتأكيده مع دالة الاستلام -->
                                     <form action="index.php?page=transfers-view" method="POST" onsubmit="return confirmApproveTransfer(event, this)">
+                                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
                                         <input type="hidden" name="action" value="approve_transfer">
                                         <input type="hidden" name="transfer_id" value="<?php echo $t['id']; ?>">
                                         <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1 px-3 rounded text-[10px] transition shadow-sm flex items-center justify-center space-x-1 space-x-reverse mx-auto">
@@ -244,7 +274,7 @@ $count_approved = count($approved_transfers);
         </div>
     </div>
 
-    <!-- سجل الأرشيف والمستندات المكتملة والمستلمة بالكامل (مع محرك الفرز الفني والتاريخي المتطور) -->
+    <!-- سجل الأرشيف والمستندات المكتملة والمستلمة بالكامل -->
     <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b pb-3 border-gray-100">
             <div class="flex items-center space-x-3 space-x-reverse">
@@ -256,7 +286,6 @@ $count_approved = count($approved_transfers);
             </div>
         </div>
 
-        <!-- [محرك الفرز والجرد المطور]: تصفية السجلات المنقولة إلى إدارة معينة من تاريخ وإلى تاريخ -->
         <form method="GET" action="index.php" class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-50/50 p-4 rounded-xl border items-end text-xs">
             <input type="hidden" name="page" value="transfers-view">
             
@@ -282,7 +311,7 @@ $count_approved = count($approved_transfers);
 
             <div class="flex space-x-2 space-x-reverse justify-end h-[34px]">
                 <a href="index.php?page=transfers-view" class="bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-1.5 px-4 rounded-lg text-xs transition">إعادة تعيين</a>
-                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1.5 px-6 rounded-lg text-xs transition shadow-sm">تطبيق جرد الحركة</button>
+                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1.5 px-6 rounded-lg text-xs transition shadow-md">تطبيق جرد الحركة</button>
             </div>
         </form>
 
@@ -295,7 +324,7 @@ $count_approved = count($approved_transfers);
                         <th class="px-6 py-3">من إدارة (الصادر)</th>
                         <th class="px-6 py-3">إلى إدارة (الوارد)</th>
                         <th class="px-6 py-3">تاريخ ووقت الاستلام</th>
-                        <th class="px-6 py-3">ملاحظات ومستلم العهدة</th>
+                        <th class="px-6 py-3">سلسلة حركة وحيازة المستند</th>
                         <th class="px-6 py-3 text-center">حالة الحيازة</th>
                     </tr>
                 </thead>
@@ -318,7 +347,10 @@ $count_approved = count($approved_transfers);
                                 <td class="px-6 py-4 text-gray-500"><?php echo htmlspecialchars($t['sender_dept']); ?></td>
                                 <td class="px-6 py-4 font-bold text-slate-800"><?php echo htmlspecialchars($t['receiver_dept']); ?></td>
                                 <td class="px-6 py-4 font-mono text-gray-400"><?php echo date('Y-m-d H:i', strtotime($t['created_at'])); ?></td>
-                                <td class="px-6 py-4 text-gray-400"><?php echo htmlspecialchars($t['notes'] ?: '-'); ?></td>
+                                <!-- توجيه الملاحظات المدمجة لتكون واضحة تحت مسمى سلسلة الحركة والحيازة الإدارية -->
+                                <td class="px-6 py-4 text-xs font-bold text-indigo-700 bg-indigo-50/30 rounded-lg max-w-xs truncate" title="<?php echo htmlspecialchars($t['notes'] ?: ''); ?>">
+                                    <?php echo htmlspecialchars($t['notes'] ?: '-'); ?>
+                                </td>
                                 <td class="px-6 py-4 text-center">
                                     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
                                         <i class="fa-solid fa-circle-check ml-1"></i>

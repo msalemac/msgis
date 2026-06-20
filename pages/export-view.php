@@ -1,4 +1,5 @@
 <?php
+// pages/export-view.php - مركز تصدير خرائط KML وجداول المعاينات الجغرافية (النسخة النهائية لبيئات PHP 8.4)
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     die("غير مسموح بالوصول المباشر.");
 }
@@ -10,11 +11,24 @@ $error = '';
 if (isset($_SESSION['export_success_msg'])) { $message = $_SESSION['export_success_msg']; unset($_SESSION['export_success_msg']); }
 if (isset($_SESSION['export_error_msg'])) { $error = $_SESSION['export_error_msg']; unset($_SESSION['export_error_msg']); }
 
+// دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+    }
+    exit;
+}
+
 // ----------------- [1. معالجة وتوليد خرائط الـ KML لجوجل إيرث من السيرفر مباشرة قبل الـ HTML] -----------------
 if (isset($_GET['action']) && $_GET['action'] === 'export_kml') {
     $exp_type_id = isset($_GET['type_id']) ? intval($_GET['type_id']) : 0;
-    $date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-    $date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+    $date_from = isset($_GET['date_from']) ? trim((string)$_GET['date_from']) : '';
+    $date_to = isset($_GET['date_to']) ? trim((string)$_GET['date_to']) : '';
 
     $where_clauses = ["r.latitude IS NOT NULL AND r.longitude IS NOT NULL"];
     $paramsExp = [];
@@ -36,7 +50,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'export_kml') {
         ");
         $stmtExp->execute($paramsExp);
         $records_kml = $stmtExp->fetchAll();
-    } catch (PDOException $e) { die("خطأ في تصدير KML."); }
+    } catch (PDOException $e) { die("خطأ في تصدير KML: " . $e->getMessage()); }
 
     $fields_stmt = $pdo->query("SELECT field_name, label FROM fields");
     $fields_map = $fields_stmt->fetchAll(PDO::FETCH_KEY_PAIR);
@@ -56,8 +70,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'export_kml') {
         $html_desc = "<h3>تفاصيل المعاينة الجغرافية لـ #" . $rec['id'] . "</h3>";
         $html_desc .= "<table border='1' style='border-collapse:collapse; font-family:sans-serif; font-size:11px; width:300px; text-align:right;' dir='rtl'>";
         $html_desc .= "<tr style='background:#f1f5f9;'><th>الحقل الفني</th><th>القيمة المعتمدة</th></tr>";
-        $html_desc .= "<tr><td><b>القسم</b></td><td>" . htmlspecialchars($rec['type_label']) . "</td></tr>";
-        $html_desc .= "<tr><td><b>المسؤول</b></td><td>" . htmlspecialchars($rec['username']) . "</td></tr>";
+        $html_desc .= "<tr><td><b>القسم</b></td><td>" . htmlspecialchars((string)$rec['type_label']) . "</td></tr>";
+        $html_desc .= "<tr><td><b>المسؤول</b></td><td>" . htmlspecialchars((string)$rec['username']) . "</td></tr>";
         $html_desc .= "<tr><td><b>تاريخ التوثيق</b></td><td>" . $rec['created_at'] . "</td></tr>";
         $html_desc .= "<tr><td><b>الإحداثيات</b></td><td>" . $rec['latitude'] . "," . $rec['longitude'] . "</td></tr>";
 
@@ -65,7 +79,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'export_kml') {
         foreach ($dyn_vals as $key => $value) {
             if (!empty($value) && $value !== 'null' && $value !== '-') {
                 $displayLabel = isset($fields_map[$key]) ? $fields_map[$key] : $key;
-                $html_desc .= "<tr><td><b>" . htmlspecialchars($displayLabel) . "</b></td><td>" . htmlspecialchars($value) . "</td></tr>";
+                $html_desc .= "<tr><td><b>" . htmlspecialchars((string)$displayLabel) . "</b></td><td>" . htmlspecialchars((string)$value) . "</td></tr>";
             }
         }
         $html_desc .= "</table>";
@@ -76,7 +90,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'export_kml') {
         }
 
         echo '    <Placemark>' . "\n";
-        echo '      <name>سجل #' . $rec['id'] . ' (' . htmlspecialchars($rec['type_label']) . ')</name>' . "\n";
+        echo '      <name>سجل #' . $rec['id'] . ' (' . htmlspecialchars((string)$rec['type_label']) . ')</name>' . "\n";
         echo '      <description><![CDATA[' . $html_desc . ']]></description>' . "\n";
         echo '      <Style>' . "\n";
         echo '        <IconStyle>' . "\n";
@@ -100,18 +114,18 @@ $types = $pdo->query("SELECT * FROM record_types ORDER BY id DESC")->fetchAll();
 
 <!-- التنبيهات باستخدام SweetAlert2 -->
 <?php if (!empty($message)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تمت العملية بنجاح', text: '<?php echo $message; ?>', confirmButtonText: 'حسناً' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تمت العملية بنجاح', text: '<?php echo htmlspecialchars($message); ?>', confirmButtonText: 'حسناً' }); });</script>
 <?php endif; ?>
 <?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo $error; ?>' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo htmlspecialchars($error); ?>' }); });</script>
 <?php endif; ?>
 
-<div class="space-y-6 max-w-4xl mx-auto animate-fade">
+<div class="space-y-6 max-w-4xl mx-auto animate-fade text-right" dir="rtl">
 
-    <!-- البوكس الثالث: محرك التصدير الجغرافي والذكي المطور -->
+    <!-- كارت محرك التصدير الجغرافي والذكي المطور -->
     <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
         <div class="flex items-center space-x-3 space-x-reverse mb-2 border-b pb-3">
-            <div class="p-2 bg-orange-100 text-orange-600 rounded-lg"><i class="fa-solid fa-file-export text-xl"></i></div>
+            <div class="p-2 bg-orange-100 text-orange-600 rounded-lg"><i class="fa-solid fa-file-export text-xl animate-pulse"></i></div>
             <h3 class="text-sm font-bold text-gray-800">مركز تصدير واستخراج البيانات الجغرافية والتقارير</h3>
         </div>
         
@@ -137,12 +151,12 @@ $types = $pdo->query("SELECT * FROM record_types ORDER BY id DESC")->fetchAll();
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
             <button onclick="triggerXlsFilteredExport()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-xl transition shadow flex items-center justify-center space-x-2 space-x-reverse text-sm">
-                <i class="fa-solid fa-file-excel text-lg"></i>
-                <span>تحميل تقرير الجداول الشامل (Excel / XLS)</span>
+                <i class="fa-solid fa-file-excel text-lg text-white"></i>
+                <span class="text-white">تحميل تقرير الجداول الشامل (Excel / XLS)</span>
             </button>
             <button onclick="triggerKmlFilteredExport()" class="bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 px-4 rounded-xl transition shadow flex items-center justify-center space-x-2 space-x-reverse text-sm">
-                <i class="fa-solid fa-earth-africa text-lg"></i>
-                <span>تحميل ملف الخرائط الجغرافية (KML / GIS Map)</span>
+                <i class="fa-solid fa-earth-africa text-lg text-white"></i>
+                <span class="text-white">تحميل ملف الخرائط الجغرافية (KML / GIS Map)</span>
             </button>
         </div>
     </div>

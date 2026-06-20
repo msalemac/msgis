@@ -1,4 +1,5 @@
 <?php
+// pages/audit-logs.php - سجل رقابة العمليات والأنشطة الإدارية (النسخة النهائية الفائقة الأمان لبيئات PHP 8.4)
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     die("غير مسموح بالوصول المباشر.");
 }
@@ -6,36 +7,58 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 $message = '';
 $error = '';
 
-// قراءة رسائل الجلسة الأمنية
+// قراءة رسائل الجلسة الأمنية لثبات واستقرار التنبيهات الرسومية
 if (isset($_SESSION['log_success_msg'])) { $message = $_SESSION['log_success_msg']; unset($_SESSION['log_success_msg']); }
 if (isset($_SESSION['log_error_msg'])) { $error = $_SESSION['log_error_msg']; unset($_SESSION['log_error_msg']); }
 
-// ----------------- [1. معالجة طلب تفريغ وتطهير السجل بالكامل (Truncate)] -----------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'clear_logs') {
-    try {
-        // تفريغ وتصفير الجدول بالكامل وإعادة تصفير الـ Auto-increment
-        $pdo->exec("SET FOREIGN_KEY_CHECKS = 0;");
-        $pdo->exec("TRUNCATE TABLE `audit_logs`");
-        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1;");
-        
-        // [اللمسة الأمنية الذكية]: كتابة أول سطر جديد فوراً في السجل الفارغ يوثق عملية مسحه ومن قام بها!
-        logActivity($pdo, "تطهير سجل العمليات", "قام مدير النظام بمسح وتصفير سجل العمليات والرقابة بالكامل لتهيئة وتوفير مساحة السيرفر.");
-        
-        $_SESSION['log_success_msg'] = "تم تفريغ وتهيئة سجل الأنشطة والعمليات بنجاح.";
-    } catch (PDOException $e) {
-        $_SESSION['log_error_msg'] = "عذراً، فشل تفريغ السجل.";
+/**
+ * دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers في بيئة PHP 8.4
+ */
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
     }
-    header("Location: index.php?page=audit-logs");
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+    }
     exit;
 }
 
-// ----------------- [2. بناء فلاتر التصفية الزمنية والمسؤول] -----------------
+// 1. معالجة طلب تفريغ وتطهير السجل بالكامل (Truncate) تحت حماية CSRF المزدوجة
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // التحقق الأمني الإجباري من توكن حماية CSRF لحماية سجل الرقابة
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
+    }
+
+    if (isset($_POST['action']) && $_POST['action'] === 'clear_logs') {
+        try {
+            // تفريغ وتصفير الجدول بالكامل وإعادة تصفير الـ Auto-increment
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = 0;");
+            $pdo->exec("TRUNCATE TABLE `audit_logs`");
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = 1;");
+            
+            // كتابة أول سطر جديد فوراً في السجل الفارغ يوثق عملية مسحه
+            logActivity($pdo, "تطهير سجل العمليات", "قام مدير النظام بمسح وتصفير سجل العمليات والرقابة بالكامل لتهيئة وتوفير مساحة السيرفر.");
+            
+            $_SESSION['log_success_msg'] = "تم تفريغ وتهيئة سجل الأنشطة والعمليات بنجاح.";
+        } catch (PDOException $e) {
+            $_SESSION['log_error_msg'] = "عذراً، فشل تفريغ السجل.";
+        }
+        safeRedirect("index.php?page=audit-logs");
+    }
+}
+
+// 2. بناء فلاتر التصفية الزمنية والمسؤول
 $where_clauses = [];
 $params = [];
 
 $filter_user = isset($_GET['filter_user']) ? intval($_GET['filter_user']) : 0;
-$date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-$date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+$date_from = isset($_GET['date_from']) ? trim((string)$_GET['date_from']) : '';
+$date_to = isset($_GET['date_to']) ? trim((string)$_GET['date_to']) : '';
 
 if ($filter_user > 0) {
     $where_clauses[] = "al.user_id = ?";
@@ -64,21 +87,21 @@ try {
     $stmtLogs->execute($params);
     $logs = $stmtLogs->fetchAll();
 } catch (PDOException $e) {
-    die("خطأ في قاعدة البيانات: " . $e->getMessage());
+    die("خطأ قاعدة البيانات: " . $e->getMessage());
 }
 
 $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAll();
 ?>
 
-<!-- التنبيهات -->
+<!-- التنبيهات بـ SweetAlert -->
 <?php if (!empty($message)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تم التطهير', text: '<?php echo $message; ?>', confirmButtonText: 'حسناً' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تم التطهير', text: '<?php echo htmlspecialchars($message); ?>', confirmButtonText: 'حسناً' }); });</script>
 <?php endif; ?>
 <?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo $error; ?>' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'تنبيه خطأ', text: '<?php echo htmlspecialchars($error); ?>' }); });</script>
 <?php endif; ?>
 
-<div class="space-y-6 max-w-5xl mx-auto">
+<div class="space-y-6 max-w-5xl mx-auto text-right" dir="rtl">
 
     <!-- أولاً: صندوق محرك البحث والفرز والمدد الزمنية وزر التطهير والمحو -->
     <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100">
@@ -99,34 +122,34 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
             <!-- مدى زمني: من -->
             <div>
                 <label class="block text-gray-500 text-xs font-semibold mb-1">من تاريخ الحدث</label>
-                <input type="date" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none text-xs text-gray-700">
+                <input type="date" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none text-xs text-gray-700 font-bold bg-white">
             </div>
 
             <!-- مدى زمني: إلى -->
             <div>
                 <label class="block text-gray-500 text-xs font-semibold mb-1">إلى تاريخ الحدث</label>
-                <input type="date" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none text-xs text-gray-700">
+                <input type="date" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none text-xs text-gray-700 font-bold bg-white">
             </div>
 
             <!-- أزرار الإجراءات التفاعلية والتطهير -->
-            <div class="flex space-x-2 space-x-reverse justify-end">
+            <div class="flex space-x-2 space-x-reverse justify-end h-[34px]">
                 <a href="index.php?page=audit-logs" class="bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-2 px-3 rounded-lg text-xs transition">إعادة تعيين</a>
                 
                 <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm">
-                    <i class="fa-solid fa-magnifying-glass"></i>
-                    <span>تطبيق الفلترة</span>
+                    <i class="fa-solid fa-magnifying-glass text-white animate-pulse"></i>
+                    <span class="text-white">تطبيق الفلترة</span>
                 </button>
 
                 <!-- زر تصدير التقرير الرقابي لـ PDF -->
                 <button type="button" onclick="printAuditLogsPDF()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm">
-                    <i class="fa-solid fa-file-pdf"></i>
-                    <span>تصدير تقرير PDF</span>
+                    <i class="fa-solid fa-file-pdf text-white"></i>
+                    <span class="text-white">تصدير تقرير PDF</span>
                 </button>
 
                 <!-- زر التطهير والمحو الكلي المحمي للـ Admin -->
                 <button type="button" onclick="confirmPurgeLogs()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm" title="تصفير وحذف السجل بالكامل لتهيئة السيرفر">
-                    <i class="fa-solid fa-eraser"></i>
-                    <span>تفريغ السجل</span>
+                    <i class="fa-solid fa-eraser text-white"></i>
+                    <span class="text-white">تفريغ السجل</span>
                 </button>
             </div>
         </form>
@@ -141,14 +164,14 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                 </div>
                 <div>
                     <h3 class="text-sm font-bold text-gray-800">تفاصيل رصد العمليات والأنشطة الإدارية</h3>
-                    <p class="text-[10px] text-gray-400">سجل أمني يوثق العمليات الإدارية والميدانية المجرية على المنصة.</p>
+                    <p class="text-[10px] text-gray-400">سجل أمني يوثق العمليات الإدارية والميدانية المجرية على المنصة لضمان النزاهة الأمنية.</p>
                 </div>
             </div>
             
             <div class="flex items-center space-x-3 space-x-reverse">
                 <!-- شريط البحث الفوري التفاعلي (Live Search) -->
                 <div class="relative w-48 md:w-60">
-                    <input type="text" id="live-search-logs" onkeyup="liveSearchLogs()" placeholder="البحث السريع في الأحداث..." class="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 bg-gray-50/50">
+                    <input type="text" id="live-search-logs" onkeyup="liveSearchLogs()" placeholder="البحث السريع في الأحداث..." class="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 bg-gray-50/50 font-bold">
                     <span class="absolute left-2.5 top-2 text-gray-400 text-[10px]"><i class="fa-solid fa-magnifying-glass"></i></span>
                 </div>
                 <span class="text-xs bg-slate-100 text-slate-700 font-bold px-3 py-1.5 rounded-full whitespace-nowrap">المطابقة: <span id="logs-visible-count"><?php echo count($logs); ?></span> حدث</span>
@@ -173,10 +196,9 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                     <?php else: ?>
                         <?php foreach ($logs as $log): 
                             $action_text = $log['action'];
-                            $badge_class = "bg-gray-100 text-gray-800"; // افتراضي
+                            $badge_class = "bg-gray-100 text-gray-800"; 
                             $icon = '<i class="fa-solid fa-circle-info ml-1 text-gray-400"></i>';
 
-                            // تصنيف العمليات لفرزها بصرياً وتسهيل الرقابة للمدير
                             if (strpos($action_text, 'حذف') !== false || strpos($action_text, 'تطهير') !== false || strpos($action_text, 'إفراغ') !== false || strpos($action_text, 'تصفير') !== false) {
                                 $badge_class = "bg-red-50 text-red-700 border border-red-100";
                                 $icon = '<span class="text-red-500 ml-1">🚨</span>';
@@ -219,13 +241,13 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
 
 </div>
 
-<!-- نموذج تفريغ السجل المخفي POST -->
+<!-- نموذج تفريغ السجل المخفي POST (محدث بالـ CSRF Token) -->
 <form id="purge-logs-form" method="POST" action="index.php?page=audit-logs" class="hidden">
+    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
     <input type="hidden" name="action" value="clear_logs">
 </form>
 
 <script>
-    // نافذة تأكيد مزدوجة ومحمية لحماية السجل من المسح الخاطئ
     function confirmPurgeLogs() {
         Swal.fire({
             title: 'هل تريد مسح وتصفير السجل؟',
@@ -243,7 +265,6 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
         });
     }
 
-    // دالة البحث الفوري التفاعلي (Live Search) عبر جافا سكريبت في السجل حالياً
     function liveSearchLogs() {
         const query = document.getElementById('live-search-logs').value.trim().toLowerCase();
         const rows = document.querySelectorAll('.log-row');
@@ -262,7 +283,6 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
         document.getElementById('logs-visible-count').innerText = visibleCount;
     }
 
-    // دالة تصدير تقرير الرقابة والأنشطة الإدارية كـ PDF منسق للغاية للجهات الإدارية
     function printAuditLogsPDF() {
         const printWindow = window.open('', '_blank');
         const tableHTML = document.getElementById('audit-table-container').innerHTML;
@@ -278,7 +298,6 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
         htmlContent += '<div class="text-center mb-6"><h1 class="text-lg font-bold text-gray-800">تقرير سجل رقابة العمليات والأنشطة الإدارية بالمنصة</h1>';
         htmlContent += '<span class="text-[10px] text-gray-400 block mt-1">تاريخ استخراج التقرير: ' + new Date().toISOString().substring(0, 10) + '</span></div>';
         
-        // إزالة الحقول التي قد تحتوي على نصوص تصفية تفادياً لطباعتها بالخطأ
         let cleanTableHTML = tableHTML.replace(/<input[^>]*>/g, '');
         
         htmlContent += cleanTableHTML;

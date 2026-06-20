@@ -1,6 +1,15 @@
 <?php
+// pages/export-csv.php - التصدير اللامركزي لـ Excel (النسخة النهائية المؤمنة لبيئات PHP 8.4)
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
+}
+
+$role = isset($role) ? $role : ($_SESSION['role'] ?? 'user');
+$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', (string)$_SESSION['allowed_pages']) : [];
+
+// [صمام أمان حرج]: حظر وطرد أي مستخدم عادي أو Viewer يحاول سحب وتنزيل بيانات السجلات بدون تصريح صريح
+if ($role !== 'admin' && !in_array('reports-view', $user_allowed_pages) && !in_array('records-manage', $user_allowed_pages)) {
+    die("عذراً، ليس لديك صلاحية تصدير السجلات والتقارير الميدانية.");
 }
 
 // 1. الفلاتر العامة الأساسية
@@ -8,16 +17,18 @@ $where_clauses = [];
 $params = [];
 
 $filter_type = isset($_GET['filter_type']) ? intval($_GET['filter_type']) : 0;
-$date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-$date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
-$search_query = isset($_GET['search']) ? trim($_GET['search']) : '';
+$date_from = isset($_GET['date_from']) ? trim((string)$_GET['date_from']) : '';
+$date_to = isset($_GET['date_to']) ? trim((string)$_GET['date_to']) : '';
+$search_query = isset($_GET['search']) ? trim((string)$_GET['search']) : '';
 
 if ($filter_type > 0) { $where_clauses[] = "r.record_type_id = ?"; $params[] = $filter_type; }
 if (!empty($date_from)) { $where_clauses[] = "DATE(r.created_at) >= ?"; $params[] = $date_from; }
 if (!empty($date_to)) { $where_clauses[] = "DATE(r.created_at) <= ?"; $params[] = $date_to; }
 if (!empty($search_query)) {
     $where_clauses[] = "(r.dynamic_values LIKE ? OR u.username LIKE ? OR r.id = ?)";
-    $params[] = '%' . $search_query . '%'; $params[] = '%' . $search_query . '%'; $params[] = intval($search_query);
+    $params[] = '%' . $search_query . '%'; 
+    $params[] = '%' . $search_query . '%'; 
+    $params[] = intval($search_query);
 }
 
 // 2. قراءة فلاتر الأعمدة المتقدمة (Excel-Style Filters) وتطبيقها في الاستعلام
@@ -32,8 +43,8 @@ foreach ($core_cols_map as $paramName => $dbCol) {
     $getParam = 'f_' . $paramName;
     $getOp = 'op_' . $paramName;
     if (isset($_GET[$getParam]) && $_GET[$getParam] !== '') {
-        $val = trim($_GET[$getParam]);
-        $op = isset($_GET[$getOp]) ? $_GET[$getOp] : 'contains';
+        $val = trim((string)$_GET[$getParam]);
+        $op = isset($_GET[$getOp]) ? trim((string)$_GET[$getOp]) : 'contains';
         
         if ($op === 'equals') {
             $where_clauses[] = "$dbCol = ?"; $params[] = $val;
@@ -58,8 +69,8 @@ foreach ($fields_list as $field) {
     $getOp = 'op_' . $paramName;
 
     if (isset($_GET[$getParam]) && $_GET[$getParam] !== '') {
-        $val = trim($_GET[$getParam]);
-        $op = isset($_GET[$getOp]) ? $_GET[$getOp] : 'contains';
+        $val = trim((string)$_GET[$getParam]);
+        $op = isset($_GET[$getOp]) ? trim((string)$_GET[$getOp]) : 'contains';
         $dbCol = "JSON_UNQUOTE(JSON_EXTRACT(r.dynamic_values, '$.$f_name'))";
 
         if ($op === 'equals') {
@@ -93,7 +104,7 @@ $stmt = $pdo->prepare($records_query);
 $stmt->execute($params);
 $records = $stmt->fetchAll();
 
-// [تم حل المشكلة هنا]: تم إزالة ob_end_clean المسببة للتنبيه والتعطل لضمان التحميل المباشر الفوري للملف
+// ترويسة ملف Excel
 header('Content-Type: application/vnd.ms-excel; charset=utf-8');
 header('Content-Disposition: attachment; filename=gis_filtered_export_' . date('Y-m-d_H-i') . '.xls');
 
@@ -122,7 +133,7 @@ foreach ($fields_list as $f) {
 }
 echo '    </tr>' . "\n";
 
-// كتابة السجلات الميدانية
+// كتابة السجلات الميدانية بدقة تامة متوافقة مع PHP 8.4+
 foreach ($records as $rec) {
     echo '    <tr>' . "\n";
     echo '      <td class="record-id-td">#' . $rec['id'] . '</td>' . "\n";
@@ -135,7 +146,7 @@ foreach ($records as $rec) {
     $dyn_vals = json_decode($rec['dynamic_values'], true) ?: [];
     foreach ($fields_list as $f) {
         $f_name = $f['field_name'];
-        $val = isset($dyn_vals[$f_name]) ? $dyn_vals[$f_name] : '-';
+        $val = isset($dyn_vals[$f_name]) ? (string)$dyn_vals[$f_name] : '-';
         echo '      <td>' . htmlspecialchars($val) . '</td>' . "\n";
     }
     echo '    </tr>' . "\n";

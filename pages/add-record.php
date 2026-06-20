@@ -1,5 +1,5 @@
 <?php
-// تم نقل ترويسات منع الكاش وبدء الجلسة إلى index.php لمنع أخطاء الـ Headers Sent
+// pages/add-record.php - نموذج التوثيق الميداني والالتقاء الجغرافي (النسخة النهائية الفائقة الأمان والتنقل)
 
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
@@ -46,6 +46,21 @@ if (!function_exists('isPointInPolygon')) {
     }
 }
 
+/**
+ * دالة إعادة التوجيه الفائقة والمقاومة للتعليق وتكرار النماذج
+ */
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+    }
+    exit;
+}
+
 // ----------------- [بوابة فحص جيو-مكانية خلفية فورية للـ GPS والـ KML] -----------------
 if (isset($_GET['action']) && $_GET['action'] === 'check_geofence') {
     header('Content-Type: application/json');
@@ -56,7 +71,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'check_geofence') {
     $detected_boundary_id = 0;
     
     if ($lat && $lng) {
-        // جلب مضلعات الحدود الإدارية المخزنة ومطابقتها بموقع الـ GPS
         $boundaries = $pdo->query("SELECT id, name, kml_data FROM boundaries")->fetchAll();
         foreach ($boundaries as $b) {
             $polygon = parseKmlToPolygonPoints($b['kml_data']);
@@ -79,116 +93,127 @@ if (isset($_GET['action']) && $_GET['action'] === 'check_geofence') {
 $get_lat = isset($_GET['lat']) ? floatval($_GET['lat']) : '';
 $get_lng = isset($_GET['lng']) ? floatval($_GET['lng']) : '';
 
-// تعيين متغيرات الدور والأقسام بالاعتماد على ملف index.php أو الجلسة كخيار احتياطي
+// تعيين متغيرات الدور والأقسام بالاعتماد على الجلسة
 $role = isset($role) ? $role : $_SESSION['role'];
 $allowed_types = !empty($_SESSION['allowed_types']) ? $_SESSION['allowed_types'] : '0';
 
 $message = '';
 $error = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_record') {
-    $record_type_id = intval($_POST['record_type_id']);
-    $latitude = !empty($_POST['latitude']) ? floatval($_POST['latitude']) : null;
-    $longitude = !empty($_POST['longitude']) ? floatval($_POST['longitude']) : null;
-    $user_id = $_SESSION['user_id'];
-
-    if ($role !== 'admin' && !in_array($record_type_id, explode(',', $allowed_types))) {
-        die("محاولة تلاعب أمنية محظورة.");
+// معالجة وحفظ مدخلات السجل الميداني أمنياً
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // التحقق الأمني الموحد لتوكن حماية CSRF لمنع طلبات التزوير
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
     }
 
-    $stmtFields = $pdo->prepare("SELECT * FROM fields WHERE FIND_IN_SET(?, record_type_id) AND is_active = 1");
-    $stmtFields->execute([$record_type_id]);
-    $typeFields = $stmtFields->fetchAll();
+    if (isset($_POST['action']) && $_POST['action'] === 'save_record') {
+        $record_type_id = intval($_POST['record_type_id'] ?? 0);
+        $latitude = !empty($_POST['latitude']) ? floatval($_POST['latitude']) : null;
+        $longitude = !empty($_POST['longitude']) ? floatval($_POST['longitude']) : null;
+        $user_id = $_SESSION['user_id'];
 
-    $dynamic_values = [];
-    $validation_ok = true;
-
-    foreach ($typeFields as $field) {
-        $f_name = $field['field_name'];
-        if ($field['type'] === 'checkbox') {
-            $dynamic_values[$f_name] = isset($_POST[$f_name]) ? 'نعم' : 'لا';
-        } else {
-            $val = isset($_POST[$f_name]) ? trim($_POST[$f_name]) : '';
-            if ($field['is_required'] && empty($val)) {
-                $validation_ok = false;
-                $error = "الحقل ({$field['label']}) إجباري.";
-                break;
-            }
-            $dynamic_values[$f_name] = $val;
+        if ($role !== 'admin' && !in_array($record_type_id, explode(',', $allowed_types))) {
+            die("محاولة تلاعب أمنية محظورة.");
         }
-    }
 
-    // [منع التداخل والتكرار الجغرافي للمخالفات في نطاق 30 متراً]
-    if ($validation_ok && $latitude && $longitude) {
-        try {
-            $stmt_prox = $pdo->prepare("
-                SELECT id, 
-                       ST_Distance_Sphere(geom, POINT(?, ?)) AS distance 
-                FROM records 
-                WHERE record_type_id = ?
-                HAVING distance < 30 
-                LIMIT 1
-            ");
-            $stmt_prox->execute([$longitude, $latitude, $record_type_id]);
-            $prox_record = $stmt_prox->fetch();
-            
-            if ($prox_record) {
-                $validation_ok = false;
-                $error = "تحذير جيو-ميداني: يوجد سجل معاينة موثق مسبقاً في هذا الموقع الجغرافي الفعلي على مسافة أقل من 30 متراً (رقم السجل: #" . $prox_record['id'] . ")، يرجى مراجعة السجلات لمنع الازدواجية.";
+        $stmtFields = $pdo->prepare("SELECT * FROM fields WHERE FIND_IN_SET(?, record_type_id) AND is_active = 1");
+        $stmtFields->execute([$record_type_id]);
+        $typeFields = $stmtFields->fetchAll();
+
+        $dynamic_values = [];
+        $validation_ok = true;
+
+        foreach ($typeFields as $field) {
+            $f_name = $field['field_name'];
+            if ($field['type'] === 'checkbox') {
+                $dynamic_values[$f_name] = isset($_POST[$f_name]) ? 'نعم' : 'لا';
+            } else {
+                $val = isset($_POST[$f_name]) ? trim((string)$_POST[$f_name]) : '';
+                if ($field['is_required'] && empty($val)) {
+                    $validation_ok = false;
+                    $error = "الحقل ({$field['label']}) إجباري لتأسيس السجل الميداني.";
+                    break;
+                }
+                $dynamic_values[$f_name] = $val;
             }
-        } catch (PDOException $e) {
-            // تجاهل أي خطأ ومتابعة الحفظ العادي
         }
-    }
 
-    // رفع الصورة
-    $photo_path = null;
-    if ($validation_ok && isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-        $upload_dir = 'uploads/photos/';
-        if (!is_dir($upload_dir)) { mkdir($upload_dir, 0755, true); }
-        $file_extension = pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION);
-        $new_filename = 'img_' . uniqid() . '_' . time() . '.' . $file_extension;
-        $target_file = $upload_dir . $new_filename;
-        if (move_uploaded_file($_FILES['photo']['tmp_name'], $target_file)) { $photo_path = $target_file; }
-    }
-
-    // رفع الـ PDF
-    $pdf_path = null;
-    if ($validation_ok && isset($_FILES['pdf_file']) && $_FILES['pdf_file']['error'] === UPLOAD_ERR_OK) {
-        $upload_dir_pdf = 'uploads/pdfs/';
-        if (!is_dir($upload_dir_pdf)) { mkdir($upload_dir_pdf, 0755, true); }
-        $file_extension = strtolower(pathinfo($_FILES['pdf_file']['name'], PATHINFO_EXTENSION));
-        if ($file_extension === 'pdf') {
-            $new_filename_pdf = 'doc_' . uniqid() . '_' . time() . '.pdf';
-            $target_file_pdf = $upload_dir_pdf . $new_filename_pdf;
-            if (move_uploaded_file($_FILES['pdf_file']['tmp_name'], $target_file_pdf)) { $pdf_path = $target_file_pdf; }
-        }
-    }
-
-    if ($validation_ok) {
-        try {
-            $json_data = json_encode($dynamic_values, JSON_UNESCAPED_UNICODE);
-            $insert = $pdo->prepare("INSERT INTO records (record_type_id, user_id, latitude, longitude, photo_path, pdf_path, dynamic_values) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $insert->execute([$record_type_id, $user_id, $latitude, $longitude, $photo_path, $pdf_path, $json_data]);
-            $new_record_id = $pdo->lastInsertId();
-
-            logActivity($pdo, "إنشاء سجل ميداني", "قام المستخدم بإنشاء سجل معاينة جديد برقم #" . $new_record_id . " بالإحداثيات: " . $latitude . "," . $longitude);
-
-            $type_label_txt = $pdo->query("SELECT label FROM record_types WHERE id = " . $record_type_id)->fetchColumn();
-            
-            $telegram_msg = "🚨 <b>توثيق معاينة ميدانية جديدة</b> 🚨\n\n";
-            $telegram_msg .= "<b>رقم السجل:</b> #" . $new_record_id . "\n";
-            $telegram_msg .= "<b>القسم الفني:</b> " . $type_label_txt . "\n";
-            $telegram_msg .= "<b>الموظف المسؤول:</b> " . $_SESSION['username'] . "\n";
-            if ($latitude && $longitude) {
-                $telegram_msg .= "<b>موقع السجل (Google Maps):</b> <a href='https://www.google.com/maps/search/?api=1&query=" . $latitude . "," . $longitude . "'>اضغط للذهاب للموقع بالسيارة</a>\n";
+        // منع التداخل والتكرار الجغرافي للمخالفات في نطاق 30 متراً
+        if ($validation_ok && $latitude && $longitude) {
+            try {
+                $stmt_prox = $pdo->prepare("
+                    SELECT id, 
+                           ST_Distance_Sphere(geom, POINT(?, ?)) AS distance 
+                    FROM records 
+                    WHERE record_type_id = ?
+                    HAVING distance < 30 
+                    LIMIT 1
+                ");
+                $stmt_prox->execute([$longitude, $latitude, $record_type_id]);
+                $prox_record = $stmt_prox->fetch();
+                
+                if ($prox_record) {
+                    $validation_ok = false;
+                    $error = "تحذير جيو-ميداني: يوجد سجل معاينة موثق مسبقاً في هذا الموقع الجغرافي الفعلي على مسافة أقل من 30 متراً (رقم السجل: #" . $prox_record['id'] . ")، يرجى مراجعة السجلات لمنع الازدواجية.";
+                }
+            } catch (PDOException $e) {
+                // تجاوز الخطأ واستكمال الحفظ الميداني العادي
             }
-            $telegram_msg .= "\n<i>تم الإرسال آلياً بواسطة GIS MANAGER SECURITY BOT</i>";
-            
-            sendTelegramNotification($telegram_msg, $photo_path);
+        }
 
-            $message = "تم حفظ وتوثيق السجل الجديد بنجاح في النظام.";
-        } catch (PDOException $e) { $error = "خطأ: " . $e->getMessage(); }
+        // رفع الصورة
+        $photo_path = null;
+        if ($validation_ok && isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+            $upload_dir = 'uploads/photos/';
+            if (!is_dir($upload_dir)) { mkdir($upload_dir, 0755, true); }
+            $file_extension = pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION);
+            $new_filename = 'img_' . uniqid() . '_' . time() . '.' . $file_extension;
+            $target_file = $upload_dir . $new_filename;
+            if (move_uploaded_file($_FILES['photo']['tmp_name'], $target_file)) { $photo_path = $target_file; }
+        }
+
+        // رفع الـ PDF
+        $pdf_path = null;
+        if ($validation_ok && isset($_FILES['pdf_file']) && $_FILES['pdf_file']['error'] === UPLOAD_ERR_OK) {
+            $upload_dir_pdf = 'uploads/pdfs/';
+            if (!is_dir($upload_dir_pdf)) { mkdir($upload_dir_pdf, 0755, true); }
+            $file_extension = strtolower(pathinfo($_FILES['pdf_file']['name'], PATHINFO_EXTENSION));
+            if ($file_extension === 'pdf') {
+                $new_filename_pdf = 'doc_' . uniqid() . '_' . time() . '.pdf';
+                $target_file_pdf = $upload_dir_pdf . $new_filename_pdf;
+                if (move_uploaded_file($_FILES['pdf_file']['tmp_name'], $target_file_pdf)) { $pdf_path = $target_file_pdf; }
+            }
+        }
+
+        if ($validation_ok) {
+            try {
+                $json_data = json_encode($dynamic_values, JSON_UNESCAPED_UNICODE);
+                $insert = $pdo->prepare("INSERT INTO records (record_type_id, user_id, latitude, longitude, photo_path, pdf_path, dynamic_values) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $insert->execute([$record_type_id, $user_id, $latitude, $longitude, $photo_path, $pdf_path, $json_data]);
+                $new_record_id = $pdo->lastInsertId();
+
+                logActivity($pdo, "إنشاء سجل ميداني", "قام المستخدم بإنشاء سجل معاينة جديد برقم #" . $new_record_id . " بالإحداثيات: " . $latitude . "," . $longitude);
+
+                // إرسال الإشعار التلقائي للتليجرام
+                $type_label_txt = $pdo->query("SELECT label FROM record_types WHERE id = " . $record_type_id)->fetchColumn();
+                $telegram_msg = "🚨 <b>توثيق معاينة ميدانية جديدة</b> 🚨\n\n";
+                $telegram_msg .= "<b>رقم السجل:</b> #" . $new_record_id . "\n";
+                $telegram_msg .= "<b>القسم الفني:</b> " . $type_label_txt . "\n";
+                $telegram_msg .= "<b>الموظف المسؤول:</b> " . $_SESSION['username'] . "\n";
+                if ($latitude && $longitude) {
+                    $telegram_msg .= "<b>موقع السجل (Google Maps):</b> <a href='https://www.google.com/maps/search/?api=1&query=" . $latitude . "," . $longitude . "'>اضغط للذهاب للموقع بالسيارة</a>\n";
+                }
+                $telegram_msg .= "\n<i>تم الإرسال آلياً بواسطة GIS MANAGER SECURITY BOT</i>";
+                
+                sendTelegramNotification($telegram_msg, $photo_path);
+
+                // تحويل الموظف الميداني لطلب GET آمن لمنع تكرار الحفاظ عند تحديث الصفحة F5 مع تفعيل خيارات الطباعة الفورية
+                $_SESSION['manage_success_msg'] = "تم حفظ وتوثيق السجل الجديد بنجاح في النظام.";
+                safeRedirect("index.php?page=add-record&success=1&last_id=" . $new_record_id);
+            } catch (PDOException $e) { $error = "خطأ بقاعدة البيانات: " . $e->getMessage(); }
+        }
     }
 }
 
@@ -210,13 +235,14 @@ foreach ($allFields as $f) {
         $grouped_fields[$tid][] = $f;
     }
 }
+
+// قراءة متغيرات النجاح بعد إعادة التوجيه الآمنة للـ PRG
+$success_saved = isset($_GET['success']) && $_GET['success'] == 1;
+$last_record_id = isset($_GET['last_id']) ? intval($_GET['last_id']) : 0;
 ?>
 
-<!-- التنبيهات مع ميزة قفل واسترداد الطباعة الفورية للمحضر الجديد -->
-<?php if (!empty($message)): ?>
-    <?php
-    $last_id = $pdo->query("SELECT MAX(id) FROM records WHERE user_id = " . intval($_SESSION['user_id']))->fetchColumn();
-    ?>
+<!-- التنبيهات الجمالية لـ SweetAlert (معدلة لتعمل آلياً بعد طلب GET الآمن لتفادي ازدواجية حفظ المستندات) -->
+<?php if ($success_saved && $last_record_id > 0): ?>
     <script>
         document.addEventListener("DOMContentLoaded", function() {
             Swal.fire({
@@ -230,39 +256,39 @@ foreach ($allFields as $f) {
                 cancelButtonText: 'موافق وإغلاق'
             }).then((result) => {
                 if (result.isConfirmed) {
-                    window.open('print.php?id=<?php echo $last_id; ?>', '_blank');
+                    window.open('print.php?id=<?php echo $last_record_id; ?>', '_blank');
                 }
-                document.getElementById('record-form').reset();
-                document.getElementById('image-preview').classList.add('hidden');
-                document.getElementById('placeholder-icon').classList.remove('hidden');
-                document.getElementById('pdf-status').classList.add('hidden');
-                document.getElementById('dynamic-fields-box').classList.add('hidden');
+                // تطهير شريط الرابط البرمجي للمتصفح لمنع تكرار ظهور النافذة عند التحديث الميداني
+                window.history.replaceState({}, document.title, "index.php?page=add-record");
             });
         });
     </script>
 <?php endif; ?>
 
 <?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'خطأ', text: '<?php echo $error; ?>' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'خطأ في حفظ السجل', text: '<?php echo htmlspecialchars($error); ?>' }); });</script>
 <?php endif; ?>
 
-<div class="max-w-6xl mx-auto">
+<div class="max-w-6xl mx-auto text-right" dir="rtl">
     <form id="record-form" action="index.php?page=add-record" method="POST" enctype="multipart/form-data" class="space-y-6">
+        
+        <!-- حقل الأمان CSRF -->
+        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
         <input type="hidden" name="action" value="save_record">
         
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
             
-            <!-- اليمين -->
+            <!-- العمود الأيمن (تعبئة الاستبيان الميداني) -->
             <div class="lg:col-span-2 space-y-6">
-                <div class="bg-white p-6 rounded-xl shadow-md border border-gray-100">
+                <div class="bg-white p-6 rounded-xl shadow-md border border-gray-105">
                     <div class="flex items-center space-x-3 space-x-reverse mb-4 border-b pb-3">
                         <div class="p-2 bg-blue-100 text-blue-600 rounded-lg"><i class="fa-solid fa-list-check text-md"></i></div>
-                        <h3 class="text-sm font-bold text-gray-800">بيانات التأسيس واختيار القسم</h3>
+                        <h3 class="text-sm font-bold text-gray-800">بيانات التأسيس واختيار القسم الميداني</h3>
                     </div>
                     <div>
                         <label class="block text-gray-600 text-xs font-semibold mb-1">اختر نوع السجل الميداني المراد تعبئته</label>
-                        <select name="record_type_id" id="record_type_id" required onchange="renderDynamicFields()" class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none text-xs font-bold text-gray-700">
-                            <option value="">-- اختر القسم --</option>
+                        <select name="record_type_id" id="record_type_id" required onchange="renderDynamicFields()" class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none text-xs font-bold text-gray-700 bg-white">
+                            <option value="">-- اختر القسم الميداني --</option>
                             <?php foreach ($types as $type): ?>
                                 <option value="<?php echo $type['id']; ?>"><?php echo htmlspecialchars($type['label']); ?></option>
                             <?php endforeach; ?>
@@ -270,13 +296,13 @@ foreach ($allFields as $f) {
                     </div>
                 </div>
 
-                <!-- حاوية الأكورديونات -->
+                <!-- حاوية الأكورديونات للجروبات -->
                 <div id="dynamic-fields-box" class="hidden space-y-4"></div>
             </div>
 
-            <!-- اليسار -->
+            <!-- العمود الأيسر (الـ GPS والمرفقات المادية) -->
             <div class="lg:col-span-1 space-y-6 lg:sticky lg:top-4">
-                <!-- الـ GPS -->
+                <!-- الـ GPS والالتقاط الجغرافي -->
                 <div class="bg-white p-6 rounded-xl shadow-md border border-gray-100">
                     <div class="flex items-center space-x-3 space-x-reverse mb-4 border-b pb-3">
                         <div class="p-2 bg-emerald-100 text-emerald-600 rounded-lg"><i class="fa-solid fa-location-crosshairs text-md"></i></div>
@@ -284,33 +310,33 @@ foreach ($allFields as $f) {
                     </div>
                     <button type="button" onclick="getLocation()" class="w-full flex items-center justify-center space-x-2 space-x-reverse bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold py-2 px-3 rounded-lg text-xs transition">
                         <i class="fa-solid fa-satellite-dish"></i>
-                        <span id="gps-btn-text">التقاط الإحداثي تلقائياً</span>
+                        <span id="gps-btn-text" class="text-white">التقاط الإحداثي تلقائياً</span>
                     </button>
                     <div class="space-y-3 mt-4">
                         <div>
                             <span class="text-[10px] text-gray-400 font-bold block mb-1">خط العرض (Latitude)</span>
-                            <input type="number" step="any" name="latitude" id="latitude" value="<?php echo $get_lat; ?>" required placeholder="مثال: 30.0444" class="w-full bg-gray-50 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold text-left focus:outline-none focus:ring-1 focus:ring-blue-500" dir="ltr">
+                            <input type="number" step="any" name="latitude" id="latitude" value="<?php echo $get_lat; ?>" required placeholder="مثال: 30.0444" class="w-full bg-gray-50 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-bold text-left focus:outline-none" dir="ltr">
                         </div>
                         <div>
                             <span class="text-[10px] text-gray-400 font-bold block mb-1">خط الطول (Longitude)</span>
-                            <input type="number" step="any" name="longitude" id="longitude" value="<?php echo $get_lng; ?>" required placeholder="مثال: 31.2357" class="w-full bg-gray-50 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-semibold text-left focus:outline-none focus:ring-1 focus:ring-blue-500" dir="ltr">
+                            <input type="number" step="any" name="longitude" id="longitude" value="<?php echo $get_lng; ?>" required placeholder="مثال: 31.2357" class="w-full bg-gray-50 px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-bold text-left focus:outline-none" dir="ltr">
                         </div>
                     </div>
                 </div>
 
-                <!-- المرفقات -->
+                <!-- المرفقات والملفات الفنية -->
                 <div class="bg-white p-6 rounded-xl shadow-md border border-gray-100">
                     <div class="flex items-center space-x-3 space-x-reverse mb-4 border-b pb-3">
                         <div class="p-2 bg-amber-100 text-amber-600 rounded-lg"><i class="fa-solid fa-paperclip text-md"></i></div>
                         <h3 class="text-sm font-bold text-gray-800">مرفقات ووثائق المعاينة</h3>
                     </div>
                     <div class="space-y-2">
-                        <span class="text-xs text-gray-500 block font-bold">1. الصورة الميدانية</span>
+                        <span class="text-xs text-gray-500 block font-bold">1. الصورة الميدانية للمعاينة</span>
                         <input type="file" id="photo-input" accept="image/*" class="hidden" onchange="processAndPreviewImage(event)">
                         <input type="file" name="photo" id="final-photo" class="hidden">
-                        <button type="button" onclick="document.getElementById('photo-input').click()" class="w-full flex items-center justify-center space-x-2 bg-gray-50 hover:bg-gray-100 text-gray-700 py-2.5 px-4 rounded-lg border-2 border-dashed border-gray-200 text-xs">
+                        <button type="button" onclick="document.getElementById('photo-input').click()" class="w-full flex items-center justify-center space-x-2 bg-gray-50 hover:bg-gray-100 text-gray-700 py-2.5 px-4 rounded-lg border-2 border-dashed border-gray-200 text-xs font-bold">
                             <i class="fa-solid fa-camera"></i>
-                            <span>التقاط الصورة</span>
+                            <span>التقاط وصيانة الصورة</span>
                         </button>
                         <div class="flex justify-center mt-1">
                             <div class="w-20 h-20 border border-gray-200 rounded-lg flex items-center justify-center overflow-hidden bg-gray-50" id="preview-box">
@@ -321,21 +347,21 @@ foreach ($allFields as $f) {
                     </div>
                     <hr class="border-gray-100 my-4">
                     <div class="space-y-2">
-                        <span class="text-xs text-gray-500 block font-bold">2. ملف PDF رسمي</span>
+                        <span class="text-xs text-gray-500 block font-bold">2. مستند PDF رسمي معتمد</span>
                         <input type="file" name="pdf_file" id="pdf_file" accept=".pdf" class="hidden" onchange="updatePdfStatus(event)">
-                        <button type="button" onclick="document.getElementById('pdf_file').click()" class="w-full flex items-center justify-center space-x-2 bg-gray-50 hover:bg-gray-100 text-gray-700 py-2.5 px-4 rounded-lg border-2 border-dashed border-gray-200 text-xs">
+                        <button type="button" onclick="document.getElementById('pdf_file').click()" class="w-full flex items-center justify-center space-x-2 bg-gray-50 hover:bg-gray-100 text-gray-700 py-2.5 px-4 rounded-lg border-2 border-dashed border-gray-200 text-xs font-bold">
                             <i class="fa-solid fa-file-pdf text-red-500"></i>
                             <span>إرفاق ملف PDF المعتمد</span>
                         </button>
-                        <div id="pdf-status" class="hidden bg-emerald-50 text-emerald-800 border border-emerald-100 p-2.5 rounded-lg text-center text-[10px] font-semibold mt-2">
+                        <div id="pdf-status" class="hidden bg-emerald-50 text-emerald-800 border border-emerald-100 p-2.5 rounded-lg text-center text-[10px] font-bold mt-2">
                             <i class="fa-solid fa-circle-check text-emerald-600"></i> <span id="pdf-filename"></span>
                         </div>
                     </div>
                 </div>
 
                 <button type="submit" class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold py-3 px-4 rounded-xl transition shadow-md flex items-center justify-center space-x-2 space-x-reverse text-md">
-                    <i class="fa-solid fa-floppy-disk"></i>
-                    <span>حفظ السجل ميدانياً</span>
+                    <i class="fa-solid fa-floppy-disk text-white"></i>
+                    <span class="text-white">حفظ السجل ميدانياً</span>
                 </button>
             </div>
 
@@ -344,7 +370,7 @@ foreach ($allFields as $f) {
 </div>
 
 <script>
-    const groupedFields = <?php echo json_encode($grouped_fields); ?>;
+    const groupedFields = <?php echo json_encode($grouped_fields, JSON_UNESCAPED_UNICODE); ?>;
     const isAdmin = <?php echo ($role === 'admin') ? 'true' : 'false'; ?>;
 
     function renderDynamicFields() {
@@ -426,7 +452,7 @@ foreach ($allFields as $f) {
                     let inputElement;
                     if (field.type === 'select') {
                         inputElement = document.createElement('select');
-                        inputElement.className = 'w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none dynamic-input';
+                        inputElement.className = 'w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-bold text-gray-750 focus:ring-1 focus:ring-emerald-500 focus:outline-none dynamic-input bg-white';
                         const defOpt = document.createElement('option');
                         defOpt.value = '';
                         defOpt.innerText = '-- اختر --';
@@ -444,12 +470,12 @@ foreach ($allFields as $f) {
                     } else if (field.type === 'textarea') {
                         inputElement = document.createElement('textarea');
                         inputElement.rows = 2;
-                        inputElement.className = 'w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none dynamic-input';
+                        inputElement.className = 'w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-bold focus:ring-1 focus:ring-emerald-500 focus:outline-none dynamic-input';
                         fieldWrapper.className = 'space-y-1 md:col-span-2'; 
                     } else {
                         inputElement = document.createElement('input');
                         inputElement.type = field.type;
-                        inputElement.className = 'w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none dynamic-input';
+                        inputElement.className = 'w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-bold focus:ring-1 focus:ring-emerald-500 focus:outline-none dynamic-input';
                     }
 
                     inputElement.name = field.field_name;
@@ -601,9 +627,6 @@ foreach ($allFields as $f) {
         }
     }
 
-    // -------------------------------------------------------------
-    // [إلغاء تنشيط وحذف الـ Service Worker القديم تلقائياً من متصفح المستخدم]
-    // -------------------------------------------------------------
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.getRegistrations().then(function(registrations) {
             for (let registration of registrations) {

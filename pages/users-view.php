@@ -1,4 +1,5 @@
 <?php
+// pages/users-view.php - إدارة الموظفين والصلاحيات والامتيازات (النسخة النهائية الفائقة الأمان لبيئات PHP 8.4)
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     die("غير مسموح بالوصول المباشر.");
 }
@@ -6,24 +7,48 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 $message = '';
 $error = '';
 
-// [تحديث أمني]: قراءة رسائل الجلسة لضمان ثبات واستقرار التنبيهات الرسومية بعد إعادة التوجيه (Redirect)
+// قراءة رقم الصفحة الحالية الخاص بجدول الحقول (الافتراضي: الصفحة 1)
+$f_page = isset($_GET['f_page']) ? max(1, intval($_GET['f_page'])) : 1;
+
+// قراءة رسائل الجلسة الأمنية
 if (isset($_SESSION['users_success_msg'])) { $message = $_SESSION['users_success_msg']; unset($_SESSION['users_success_msg']); }
 if (isset($_SESSION['users_error_msg'])) { $error = $_SESSION['users_error_msg']; unset($_SESSION['users_error_msg']); }
 
+/**
+ * دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers في بيئة PHP 8.4
+ */
+function safeRedirect($url) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    if (!headers_sent()) {
+        header("Location: " . $url);
+    } else {
+        echo "<script>window.location.href='" . $url . "';</script>";
+    }
+    exit;
+}
+
+// معالجة كافة طلبات POST (الحفظ والحذف والاعتماد والحل) تحت حماية CSRF المزدوجة
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
+    // التحقق الأمني الإجباري لتوكن الجلسة CSRF لحماية حسابات الموظفين والصلاحيات
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== ($_SESSION['csrf_token'] ?? '')) {
+        die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
+    }
+
     // 1. إضافة أو تعديل مستخدم وتوثيق تصاريح أقسامه وصفحاته
     if (isset($_POST['action']) && $_POST['action'] === 'save_user') {
         $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
-        $username = trim($_POST['username']);
-        $email = trim($_POST['email']);
-        $password = trim($_POST['password']);
-        $role = trim($_POST['role']);
+        $username = trim((string)($_POST['username'] ?? ''));
+        $email = trim((string)($_POST['email'] ?? ''));
+        $password = trim((string)($_POST['password'] ?? ''));
+        $role = trim((string)($_POST['role'] ?? 'viewer'));
         
-        $allowed_types_arr = isset($_POST['allowed_types_ids']) ? $_POST['allowed_types_ids'] : [];
+        $allowed_types_arr = isset($_POST['allowed_types_ids']) ? (array)$_POST['allowed_types_ids'] : [];
         $allowed_types_str = implode(',', array_map('intval', $allowed_types_arr));
 
-        $allowed_pages_arr = isset($_POST['allowed_pages_slugs']) ? $_POST['allowed_pages_slugs'] : [];
+        $allowed_pages_arr = isset($_POST['allowed_pages_slugs']) ? (array)$_POST['allowed_pages_slugs'] : [];
         $allowed_pages_str = implode(',', array_map('serialize_clean_slugs', $allowed_pages_arr));
 
         if (!empty($username) && !empty($email)) {
@@ -65,17 +90,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['users_error_msg'] = "يرجى ملء الحقول الأساسية للحساب.";
         }
         
-        // إعادة التوجيه لفرض تحميل الهيدر والـ CSS المشتركين بنجاح
-        header("Location: index.php?page=users-view");
-        exit;
+        safeRedirect("index.php?page=users-view");
     }
 
     // 2. حذف حساب موظف
     if (isset($_POST['action']) && $_POST['action'] === 'delete_user') {
-        $del_id = intval($_POST['user_id']);
+        $del_id = intval($_POST['user_id'] ?? 0);
         if ($del_id !== intval($_SESSION['user_id'])) {
             try {
-                // جلب اسم المستخدم لتوثيقه
                 $stmtUsr = $pdo->prepare("SELECT username FROM users WHERE id = ?");
                 $stmtUsr->execute([$del_id]);
                 $del_name = $stmtUsr->fetchColumn();
@@ -87,20 +109,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['users_success_msg'] = "تم حذف الحساب ومحوه من النظام بنجاح.";
             } catch (PDOException $e) { $_SESSION['users_error_msg'] = "لا يمكن حذف المستخدم لارتباطه بسجلات توثيق في النظام."; }
         }
-        header("Location: index.php?page=users-view");
-        exit;
+        safeRedirect("index.php?page=users-view");
     }
 
     // 3. مسح واعتماد طلب استرجاع الباسورد المعلق
     if (isset($_POST['action']) && $_POST['action'] === 'complete_request') {
-        $req_id = intval($_POST['request_id']);
+        $req_id = intval($_POST['request_id'] ?? 0);
         try {
             $stmtC = $pdo->prepare("UPDATE password_requests SET status = 'completed' WHERE id = ?");
             $stmtC->execute([$req_id]);
             $_SESSION['users_success_msg'] = "تم اعتماد وحل طلب استرجاع كلمة المرور بنجاح.";
         } catch (PDOException $e) { $_SESSION['users_error_msg'] = "فشل تحديث واعتماد طلب الاستعادة المعلق."; }
-        header("Location: index.php?page=users-view");
-        exit;
+        safeRedirect("index.php?page=users-view");
     }
 }
 
@@ -108,35 +128,38 @@ function serialize_clean_slugs($slug) {
     return preg_replace('/[^a-zA-Z0-9_-]/', '', $slug);
 }
 
-// جلب البيانات
+// جلب البيانات الأساسية
 $users = $pdo->query("SELECT id, username, email, role, allowed_types, allowed_pages, created_at FROM users ORDER BY id DESC")->fetchAll();
 $record_types = $pdo->query("SELECT id, label FROM record_types ORDER BY id DESC")->fetchAll();
 
 // جلب طلبات الاسترجاع المعلقة
 $pending_requests = $pdo->query("SELECT * FROM password_requests WHERE status = 'pending' ORDER BY id DESC")->fetchAll();
 
-// [تم التحديث]: مصفوفة الموديولات والصفحات مدمجاً بها موديول الصادر والوارد الجديد
+// مصفوفة الموديولات والصفحات المفتوحة للتصاريح والـ RBAC
 $system_modules_list = [
     'add-record'     => 'إضافة سجل جديد',
     'map-view'       => 'الخريطة التفاعلية والحدود',
     'records-manage' => 'إدارة السجلات الميدانية',
     'dashboard-view' => 'لوحة المؤشرات والرسوم (Dashboard)',
     'reports-view'   => 'منشئ ومستخرج التقارير التفصيلية',
-    'transfers-view' => 'إدارة الصادر والوارد والحركة المستندية' // موديول الصادر والوارد الجديد
+    'transfers-view' => 'إدارة الصادر والوارد والحركة المستندية'
 ];
 ?>
 
-<!-- التنبيهات الرسومية المعتمدة بعد المزامنة التوجيهية -->
+<!-- التنبيهات بـ SweetAlert -->
 <?php if (!empty($message)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تمت العملية', text: '<?php echo $message; ?>', confirmButtonText: 'حسناً' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'success', title: 'تمت العملية', text: '<?php echo htmlspecialchars($message); ?>', confirmButtonText: 'حسناً' }); });</script>
 <?php endif; ?>
 <?php if (!empty($error)): ?>
-    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'خطأ', text: '<?php echo $error; ?>' }); });</script>
+    <script>document.addEventListener("DOMContentLoaded", function() { Swal.fire({ icon: 'error', title: 'خطأ', text: '<?php echo htmlspecialchars($error); ?>' }); });</script>
 <?php endif; ?>
 
-<div class="space-y-6 animate-fade">
+<!-- حقل أمان تفاعلي مخفي لتزويد الـ JS بالتوكن المعتمد للـ SweetAlert Form -->
+<input type="hidden" id="ajax_csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
 
-    <!-- صندوق طلبات الاسترجاع المعلقة الواردة من الموظفين (يظهر فقط إن وُجدت طلبات معلقة) -->
+<div class="space-y-6 animate-fade text-right" dir="rtl">
+
+    <!-- كارت طلبات الاسترجاع المعلقة الواردة من الموظفين -->
     <?php if (count($pending_requests) > 0): ?>
         <div class="bg-red-50 p-6 rounded-2xl border border-red-200 space-y-4">
             <div class="flex items-center space-x-3 space-x-reverse text-red-800">
@@ -151,11 +174,11 @@ $system_modules_list = [
                             <span class="text-[10px] text-gray-400 block font-mono">البريد: <?php echo htmlspecialchars($req['email']); ?></span>
                         </div>
                         <div class="flex space-x-2 space-x-reverse">
-                            <!-- زر شحن بياناته فوراً في الاستمارة لتغيير الباسورد له -->
-                            <button onclick="editUserByRequest('<?php echo htmlspecialchars($req['username']); ?>', '<?php echo htmlspecialchars($req['email']); ?>')" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded text-[10px]">تعديل وباسورد جديد</button>
+                            <button type="button" onclick="editUserByRequest('<?php echo htmlspecialchars($req['username']); ?>', '<?php echo htmlspecialchars($req['email']); ?>')" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded text-[10px]">تعديل وباسورد جديد</button>
                             
-                            <!-- زر اعتماد وحل الطلب مباشرة -->
+                            <!-- اعتماد وحل الطلب مباشرة (مؤمن بالـ CSRF) -->
                             <form action="index.php?page=users-view" method="POST" class="inline">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
                                 <input type="hidden" name="action" value="complete_request">
                                 <input type="hidden" name="request_id" value="<?php echo $req['id']; ?>">
                                 <button type="submit" class="bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-1 px-2 rounded text-[10px]">موافق وحل</button>
@@ -169,7 +192,7 @@ $system_modules_list = [
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         
-        <!-- الاستمارة -->
+        <!-- استمارة الإضافة والتعديل -->
         <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 lg:col-span-1">
             <div class="flex items-center space-x-3 space-x-reverse mb-4 border-b pb-3">
                 <div class="p-2 bg-blue-100 text-blue-600 rounded-lg"><i class="fa-solid fa-user-plus text-xl"></i></div>
@@ -177,22 +200,25 @@ $system_modules_list = [
             </div>
 
             <form id="user-form" action="index.php?page=users-view" method="POST" class="space-y-4">
+                
+                <!-- حقل الأمان CSRF -->
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
                 <input type="hidden" name="action" value="save_user">
                 <input type="hidden" name="user_id" id="user_id" value="0">
                 
                 <div>
                     <label class="block text-gray-600 text-[11px] font-bold mb-1">اسم المستخدم (بالإنجليزي)</label>
-                    <input type="text" name="username" id="username" placeholder="username" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                    <input type="text" name="username" id="username" placeholder="username" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none bg-white font-bold" dir="ltr">
                 </div>
                 
                 <div>
                     <label class="block text-gray-600 text-[11px] font-bold mb-1">البريد الإلكتروني</label>
-                    <input type="email" name="email" id="email" placeholder="example@gismanger.vip" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                    <input type="email" name="email" id="email" placeholder="example@gismanger.vip" required class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none bg-white font-bold" dir="ltr">
                 </div>
 
                 <div>
                     <label class="block text-gray-600 text-[11px] font-bold mb-1" id="pass-label">كلمة المرور الافتراضية</label>
-                    <input type="password" name="password" id="password" class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none" dir="ltr">
+                    <input type="password" name="password" id="password" class="w-full px-4 py-2 border rounded-lg text-left text-xs focus:outline-none bg-white font-bold" dir="ltr">
                     <p id="pass-help" class="text-[9px] text-gray-400 mt-1 hidden">اترك الحقل فارغاً للاحتفاظ بكلمة المرور القديمة دون تعديل.</p>
                 </div>
 
@@ -205,7 +231,7 @@ $system_modules_list = [
                     </select>
                 </div>
 
-                <!-- أقسام الخريطة -->
+                <!-- أقسام الخريطة المصرح بها -->
                 <div>
                     <label class="block text-gray-600 text-[11px] font-bold mb-1.5"><i class="fa-solid fa-lock text-red-500"></i> تحديد الأقسام المصرح له برؤيتها:</label>
                     <div class="space-y-2 bg-gray-50 p-3 rounded-xl border border-gray-100 max-h-28 overflow-y-auto">
@@ -214,7 +240,7 @@ $system_modules_list = [
                         <?php else: ?>
                             <?php foreach ($record_types as $type): ?>
                                 <label class="flex items-center space-x-2 space-x-reverse cursor-pointer select-none text-[11px] text-gray-700">
-                                    <input type="checkbox" name="allowed_types_ids[]" value="<?php echo $type['id']; ?>" class="user-allowed-cb w-4 h-4 text-blue-600 border-gray-300 rounded">
+                                    <input type="checkbox" name="allowed_types_ids[]" value="<?php echo $type['id']; ?>" class="user-allowed-cb w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer">
                                     <span><?php echo htmlspecialchars($type['label']); ?></span>
                                 </label>
                             <?php endforeach; ?>
@@ -222,13 +248,13 @@ $system_modules_list = [
                     </div>
                 </div>
 
-                <!-- صفحات القائمة -->
+                <!-- موديولات القائمة المصرح بها -->
                 <div>
                     <label class="block text-gray-600 text-[11px] font-bold mb-1.5"><i class="fa-solid fa-table-list text-purple-600"></i> تحديد الموديولات الجانبية المتاحة:</label>
                     <div class="space-y-2 bg-gray-50 p-3 rounded-xl border border-gray-100 max-h-32 overflow-y-auto">
                         <?php foreach ($system_modules_list as $slug => $label): ?>
                             <label class="flex items-center space-x-2 space-x-reverse cursor-pointer select-none text-[11px] text-gray-700">
-                                <input type="checkbox" name="allowed_pages_slugs[]" value="<?php echo $slug; ?>" class="user-allowed-pages-cb w-4 h-4 text-purple-600 border-gray-300 rounded">
+                                <input type="checkbox" name="allowed_pages_slugs[]" value="<?php echo $slug; ?>" class="user-allowed-pages-cb w-4 h-4 text-purple-600 border-gray-300 rounded cursor-pointer">
                                 <span><?php echo htmlspecialchars($label); ?></span>
                             </label>
                         <?php endforeach; ?>
@@ -237,16 +263,16 @@ $system_modules_list = [
 
                 <div class="flex space-x-2 space-x-reverse pt-2">
                     <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-xl transition text-xs shadow-sm">حفظ الحساب</button>
-                    <button type="button" onclick="cancelUserEdit()" id="cancel-user-btn" class="hidden bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-2 px-4 rounded-xl text-xs">إلغاء</button>
+                    <button type="button" onclick="cancelUserEdit()" id="cancel-user-btn" class="hidden bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-2.5 px-4 rounded-xl text-xs">إلغاء</button>
                 </div>
             </form>
         </div>
 
-        <!-- جدول الحسابات -->
-        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 lg:col-span-2">
+        <!-- جدول الحسابات الحالية بالمنصة -->
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 lg:col-span-2 hover:shadow-lg transition duration-300">
             <div class="flex items-center space-x-3 space-x-reverse mb-4 border-b pb-3">
                 <div class="p-2 bg-purple-100 text-purple-600 rounded-lg"><i class="fa-solid fa-users text-xl"></i></div>
-                <h3 class="text-lg font-bold text-gray-800">قائمة الحسابات والجهات المصرحة</h3>
+                <h3 class="text-lg font-bold text-gray-800">قائمة الحسابات والجهات المصرحة بالعمل</h3>
             </div>
 
             <div class="overflow-x-auto">
@@ -314,8 +340,9 @@ $system_modules_list = [
     </div>
 </div>
 
-<!-- نموذج الحذف المخفي -->
+<!-- نموذج الحذف المخفي (محدث بالـ CSRF Token) -->
 <form id="user-delete-form" method="POST" action="index.php?page=users-view" class="hidden">
+    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'] ?? ''); ?>">
     <input type="hidden" name="action" value="delete_user">
     <input type="hidden" name="user_id" id="delete-user-id">
 </form>
@@ -359,7 +386,6 @@ $system_modules_list = [
 
     // دالة شحن طلب الاسترجاع فوراً لتغيير الباسورد
     function editUserByRequest(username, email) {
-        // البحث عن بيانات المستخدم بقائمة الجداول وتجهيز شحنه
         cancelUserEdit();
         document.getElementById('username').value = username;
         document.getElementById('email').value = email;

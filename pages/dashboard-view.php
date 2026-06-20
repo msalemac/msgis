@@ -1,20 +1,70 @@
 <?php
-// حماية الملف من الوصول المباشر
+// pages/dashboard-view.php - لوحة المؤشرات والرسوم البيانية المصفاة وباني الـ KPIs مع موديول التحليل الجغرافي (النسخة الآمنة والمحصنة ضد أخطاء KML)
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
 }
 
-// جلب جميع الحقول المخصصة النشطة في السيستم لبناء فلاتر متقدمة لها ديناميكياً
-$fields_list = $pdo->query("SELECT field_name, label, type, options, record_type_id FROM fields WHERE is_active = 1 ORDER BY group_name, field_order ASC")->fetchAll(PDO::FETCH_ASSOC);
+// تعريف دوال الفحص والمطابقة الجغرافية الثنائية (المحصنة ضد تحذيرات XML ومساحات جوجل إيرث)
+if (!function_exists('parseKmlToPolygonPoints')) {
+    function parseKmlToPolygonPoints($kml_data) {
+        $polygon = [];
+        try {
+            // كتم أخطاء وتحذيرات الـ XML والـ Namespaces المعقدة لجوجل إيرث مؤقتاً لتجنب إفساد الواجهة
+            libxml_use_internal_errors(true);
+            
+            $xml = simplexml_load_string($kml_data);
+            if ($xml) {
+                $xml->registerXPathNamespace('kml', 'http://www.opengis.net/kml/2.2');
+                $result = $xml->xpath('//kml:coordinates');
+                if (empty($result)) { $result = $xml->xpath('//coordinates'); }
+                if (!empty($result)) {
+                    $coordsText = trim((string)$result[0]);
+                    $coordsArr = preg_split('/\s+/', $coordsText);
+                    foreach ($coordsArr as $pointStr) {
+                        $parts = explode(',', $pointStr);
+                        if (count($parts) >= 2) {
+                            $polygon[] = ['lat' => floatval($parts[1]), 'lng' => floatval($parts[0])];
+                        }
+                    }
+                }
+            }
+            
+            // تطهير وإعادة ذاكرة أخطاء الـ XML لوضعها الطبيعي بأمان
+            libxml_clear_errors();
+            libxml_use_internal_errors(false);
+            
+        } catch (Exception $e) {}
+        return $polygon;
+    }
+}
 
-// ----------------- [الجزء الأول: فلاتر الداش بورد الأساسية] -----------------
+if (!function_exists('isPointInPolygon')) {
+    function isPointInPolygon($lat, $lng, $polygon) {
+        $inside = false;
+        $numPoints = count($polygon);
+        if ($numPoints < 3) return false;
+        for ($i = 0, $j = $numPoints - 1; $i < $numPoints; $j = $i++) {
+            $xi = $polygon[$i]['lat']; $yi = $polygon[$i]['lng'];
+            $xj = $polygon[$j]['lat']; $yj = $polygon[$j]['lng'];
+            $intersect = (($yi > $lng) != ($yj > $lng)) && ($lat < ($xj - $xi) * ($lng - $yi) / ($yj - $yi) + $xi);
+            if ($intersect) $inside = !$inside;
+        }
+        return $inside;
+    }
+}
+
+// جلب جميع الحقول المخصصة النشطة في السيستم لبناء فلاتر متقدمة وقوائم بيضاء للحماية
+$fields_list = $pdo->query("SELECT field_name, label, type, options, record_type_id FROM fields WHERE is_active = 1 ORDER BY group_name, field_order ASC")->fetchAll(PDO::FETCH_ASSOC);
+$valid_field_names = array_column($fields_list, 'field_name');
+
+// ----------------- [الجزء الأول: فلاتر الداش بورد الأساسية المصفاة] -----------------
 $where_clauses = [];
 $params = [];
 
 $filter_type = isset($_GET['filter_type']) ? intval($_GET['filter_type']) : 0;
 $filter_user = isset($_GET['filter_user']) ? intval($_GET['filter_user']) : 0;
-$date_from = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
-$date_to = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+$date_from = isset($_GET['date_from']) ? trim((string)$_GET['date_from']) : '';
+$date_to = isset($_GET['date_to']) ? trim((string)$_GET['date_to']) : '';
 
 if ($filter_type > 0) { $where_clauses[] = "r.record_type_id = ?"; $params[] = $filter_type; }
 if ($filter_user > 0) { $where_clauses[] = "r.user_id = ?"; $params[] = $filter_user; }
@@ -27,7 +77,7 @@ foreach ($fields_list as $field) {
     $getParam = 'col_' . $f_name;
     
     if (isset($_GET[$getParam]) && $_GET[$getParam] !== '') {
-        $val = trim($_GET[$getParam]);
+        $val = trim((string)$_GET[$getParam]);
         $dbCol = "JSON_UNQUOTE(JSON_EXTRACT(r.dynamic_values, '$.$f_name'))";
         
         if ($field['type'] === 'checkbox') {
@@ -99,9 +149,72 @@ try {
         $line_counts[] = $row['cnt'];
     }
 
+    // ----------------- [موديول التوزيع الجغرافي]: محرك ومقاطعة البيانات للتحليل الجغرافي ونسب التركز بالحدود KML -----------------
+    $spatial_analysis_results = [];
+    $unassigned_geo_records = 0;
+
+    // جلب السجلات الجغرافية المصفاة حالياً (خطوط الطول والعرض فقط)
+    $stmtPointsGeo = $pdo->prepare("
+        SELECT r.latitude, r.longitude 
+        FROM records r 
+        JOIN users u ON r.user_id = u.id
+        $total_sql
+    ");
+    $stmtPointsGeo->execute($params);
+    $geo_records = $stmtPointsGeo->fetchAll();
+
+    // جلب مضلعات الحدود الإدارية للـ KML وتجهيز نقاطها مسبقاً في مصفوفة برمجية لتفادي بطء الاستدعاء
+    $boundaries = $pdo->query("SELECT id, name, kml_data, color FROM boundaries")->fetchAll();
+    
+    $boundary_polygons = [];
+    foreach ($boundaries as $b) {
+        $boundary_polygons[$b['id']] = [
+            'name' => $b['name'],
+            'color' => $b['color'] ?: '#ff7800',
+            'polygon' => parseKmlToPolygonPoints($b['kml_data']),
+            'count' => 0
+        ];
+    }
+
+    // مقاطعة النقاط المفلترة وتوزيعها جغرافياً بداخل المضلعات
+    foreach ($geo_records as $rec) {
+        if ($rec['latitude'] && $rec['longitude']) {
+            $matched = false;
+            foreach ($boundary_polygons as $id => &$b_data) {
+                if (isPointInPolygon(floatval($rec['latitude']), floatval($rec['longitude']), $b_data['polygon'])) {
+                    $b_data['count']++;
+                    $matched = true;
+                    break;
+                }
+            }
+            if (!$matched) { $unassigned_geo_records++; }
+        } else {
+            $unassigned_geo_records++;
+        }
+    }
+
+    // فرز النتائج جغرافياً تنازلياً من الأكثر تركيزاً للأقل
+    uasort($boundary_polygons, function($a, $b) {
+        return $b['count'] - $a['count'];
+    });
+
+    // تجهيز مصفوفات بيانات الرسم الدائري للتوزيع المكاني
+    $geo_chart_labels = [];
+    $geo_chart_counts = [];
+    foreach ($boundary_polygons as $b_data) {
+        if ($b_data['count'] > 0) {
+            $geo_chart_labels[] = $b_data['name'];
+            $geo_chart_counts[] = $b_data['count'];
+        }
+    }
+    if ($unassigned_geo_records > 0) {
+        $geo_chart_labels[] = "خارج النطاق الموثق";
+        $geo_chart_counts[] = $unassigned_geo_records;
+    }
+
     // ----------------- [الجزء الثاني: باني ومصمم الكروت الإحصائية المخصصة (KPIs)] -----------------
     $widget_type_id = isset($_GET['widget_type_id']) ? intval($_GET['widget_type_id']) : 0;
-    $widget_fields = isset($_GET['widget_fields']) ? $_GET['widget_fields'] : []; 
+    $widget_fields = isset($_GET['widget_fields']) ? (array)$_GET['widget_fields'] : []; 
 
     $widget_results = [];
     $widget_total_count = 0;
@@ -113,12 +226,16 @@ try {
 
         foreach ($widget_fields as $f_name) {
             $f_name = preg_replace('/[^a-zA-Z0-9_]/', '', $f_name); 
+            
+            if (!in_array($f_name, $valid_field_names) && !in_array($f_name, ['point_number', 'owner_name'])) {
+                continue; 
+            }
+
             $stmtCheckF = $pdo->prepare("SELECT label, type FROM fields WHERE field_name = ? AND is_active = 1 LIMIT 1");
             $stmtCheckF->execute([$f_name]);
             $f_info = $stmtCheckF->fetch();
 
             if ($f_info) {
-                // [تحسين الأداء]: استخدام العمود المولد والمفهرس لتسريع الاستعلام الجغرافي
                 $dbCol = "JSON_UNQUOTE(JSON_EXTRACT(dynamic_values, '$.$f_name'))";
                 if ($f_name === 'point_number') {
                     $dbCol = "extracted_point_number";
@@ -147,10 +264,14 @@ try {
     }
 
     // ----------------- [الجزء الثالث: محرك التحليل التفصيلي الإحصائي للحقول المخصصة] -----------------
-    $rf_field = isset($_GET['report_field']) ? trim($_GET['report_field']) : '';
+    $rf_field = isset($_GET['report_field']) ? trim((string)$_GET['report_field']) : '';
     $rf_user = isset($_GET['report_user']) ? intval($_GET['report_user']) : 0;
-    $rf_from = isset($_GET['report_date_from']) ? trim($_GET['report_date_from']) : '';
-    $rf_to = isset($_GET['report_date_to']) ? trim($_GET['report_date_to']) : '';
+    $rf_from = isset($_GET['report_date_from']) ? trim((string)$_GET['report_date_from']) : '';
+    $rf_to = isset($_GET['report_date_to']) ? trim((string)$_GET['report_date_to']) : '';
+
+    if (!empty($rf_field) && !in_array($rf_field, $valid_field_names)) {
+        die("محاولة تلاعب أمنية محظورة.");
+    }
 
     $rf_clauses = [];
     $rf_params = [];
@@ -169,7 +290,6 @@ try {
         $rf_clauses[] = "$dbCol IS NOT NULL AND $dbCol != '' AND $dbCol != 'null'";
         $rf_sql = "WHERE " . implode(" AND ", $rf_clauses);
 
-        // استعلام تجميع وعد القيم الفريدة داخل الحقل الـ JSON المحدد
         $stmtRF = $pdo->prepare("
             SELECT $dbCol AS val, COUNT(r.id) AS cnt 
             FROM records r
@@ -197,30 +317,29 @@ $types = $pdo->query("SELECT * FROM record_types ORDER BY id DESC")->fetchAll();
 $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAll();
 ?>
 
-<!-- ترويسة الرسوم والمخططات البيانية المستدعية بـ Chart.js -->
+<!-- استدعاء ملفات مكتبة المخططات الرسمية Chart.js -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-<div class="space-y-6">
+<div class="space-y-6 text-right animate-fade" dir="rtl">
 
-    <!-- أولاً: لوحة التصفية الأساسية والمتقدمة -->
-    <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 hover:shadow-lg transition duration-300">
+    <!-- أولاً: لوحة التصفية الأساسية والمتقدمة للداش بورد -->
+    <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 hover:shadow-lg transition duration-300">
         <form method="GET" action="index.php" class="space-y-4">
             <input type="hidden" name="page" value="dashboard-view">
             
-            <!-- تمرير قيم الفلترة للحقول الإحصائية المخصصة لثباتها -->
             <input type="hidden" name="widget_type_id" value="<?php echo $widget_type_id; ?>">
             <?php foreach ($widget_fields as $wf): ?>
-                <input type="hidden" name="widget_fields[]" value="<?php echo htmlspecialchars($wf); ?>">
+                <input type="hidden" name="widget_fields[]" value="<?php echo htmlspecialchars((string)$wf); ?>">
             <?php endforeach; ?>
             <input type="hidden" name="report_field" value="<?php echo htmlspecialchars($rf_field); ?>">
             <input type="hidden" name="report_user" value="<?php echo $rf_user; ?>">
             <input type="hidden" name="report_date_from" value="<?php echo htmlspecialchars($rf_from); ?>">
             <input type="hidden" name="report_date_to" value="<?php echo htmlspecialchars($rf_to); ?>">
 
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end font-semibold">
                 <div>
-                    <label class="block text-gray-500 text-xs font-semibold mb-1">القسم الميداني</label>
-                    <select name="filter_type" class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none text-xs font-bold text-gray-700 bg-white">
+                    <label class="block text-slate-500 text-xs font-bold mb-1.5">القسم الميداني للفرز</label>
+                    <select name="filter_type" class="w-full px-3 py-2 border border-gray-200 rounded-xl focus:outline-none text-xs font-bold text-gray-700 bg-white">
                         <option value="">كل الأقسام</option>
                         <?php foreach ($types as $type): ?>
                             <option value="<?php echo $type['id']; ?>" <?php echo $filter_type === intval($type['id']) ? 'selected' : ''; ?>>
@@ -230,8 +349,8 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                     </select>
                 </div>
                 <div>
-                    <label class="block text-gray-500 text-xs font-semibold mb-1">الموظف المسؤول</label>
-                    <select name="filter_user" class="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none text-xs font-bold text-gray-700 bg-white">
+                    <label class="block text-slate-500 text-xs font-bold mb-1.5">الموظف المسؤول</label>
+                    <select name="filter_user" class="w-full px-3 py-2 border border-gray-200 rounded-xl focus:outline-none text-xs font-bold text-gray-700 bg-white">
                         <option value="">كل الموظفين</option>
                         <?php foreach ($users as $user): ?>
                             <option value="<?php echo $user['id']; ?>" <?php echo $filter_user === intval($user['id']) ? 'selected' : ''; ?>>
@@ -241,31 +360,31 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                     </select>
                 </div>
                 <div>
-                    <label class="block text-gray-500 text-xs font-semibold mb-1">من تاريخ</label>
-                    <input type="date" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none text-xs text-gray-700 bg-white">
+                    <label class="block text-slate-500 text-xs font-bold mb-1.5">من تاريخ التوثيق</label>
+                    <input type="date" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-xl text-xs text-gray-700 font-bold bg-white focus:outline-none">
                 </div>
                 <div>
-                    <label class="block text-gray-500 text-xs font-semibold mb-1">إلى تاريخ</label>
-                    <input type="date" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none text-xs text-gray-700 bg-white">
+                    <label class="block text-slate-500 text-xs font-bold mb-1.5">إلى تاريخ التوثيق</label>
+                    <input type="date" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>" class="w-full px-3 py-1.5 border border-gray-200 rounded-xl text-xs text-gray-700 font-bold bg-white focus:outline-none">
                 </div>
             </div>
 
-            <!-- صف مخصص لتصفية الحقول المتقدمة -->
+            <!-- صف التصفية بالحقول المتقدمة -->
             <?php if (count($fields_list) > 0): ?>
                 <div class="border-t pt-3">
                     <button type="button" onclick="toggleAdvancedFilters()" class="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center space-x-1 space-x-reverse focus:outline-none">
                         <i class="fa-solid fa-sliders text-sm"></i>
                         <span>تصفية الداش بورد بالحقول والبيانات المتقدمة</span>
-                        <i id="filters-arrow" class="fa-solid fa-chevron-down text-[10px] transition-transform duration-300"></i>
+                        <i id="filters-arrow" class="fa-solid fa-chevron-down text-[10px] transition-transform duration-300 font-bold"></i>
                     </button>
-                    <div id="advanced-filters-container" class="hidden grid grid-cols-1 md:grid-cols-4 gap-4 mt-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                    <div id="advanced-filters-container" class="hidden grid grid-cols-1 md:grid-cols-4 gap-4 mt-4 p-4 bg-gray-50 rounded-2xl border border-gray-150">
                         <?php foreach ($fields_list as $field): 
-                            $getVal = isset($_GET['col_' . $field['field_name']]) ? trim($_GET['col_' . $field['field_name']]) : '';
+                            $getVal = isset($_GET['col_' . $field['field_name']]) ? trim((string)$_GET['col_' . $field['field_name']]) : '';
                         ?>
                             <div>
-                                <label class="block text-gray-500 text-[10px] font-bold mb-1"><?php echo htmlspecialchars($field['label']); ?></label>
+                                <label class="block text-slate-500 text-[10px] font-bold mb-1.5"><?php echo htmlspecialchars($field['label']); ?></label>
                                 <?php if ($field['type'] === 'select'): ?>
-                                    <select name="col_<?php echo $field['field_name']; ?>" class="w-full px-2 py-1 bg-white border border-gray-200 rounded text-xs focus:outline-none">
+                                    <select name="col_<?php echo $field['field_name']; ?>" class="w-full px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none font-bold text-gray-700">
                                         <option value="">-- الكل --</option>
                                         <?php 
                                         $opts = explode(',', $field['options']);
@@ -276,13 +395,13 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                                         <?php endforeach; ?>
                                     </select>
                                 <?php elseif ($field['type'] === 'checkbox'): ?>
-                                    <select name="col_<?php echo $field['field_name']; ?>" class="w-full px-2 py-1 bg-white border border-gray-200 rounded text-xs focus:outline-none">
+                                    <select name="col_<?php echo $field['field_name']; ?>" class="w-full px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none font-bold text-gray-700">
                                         <option value="">-- الكل --</option>
                                         <option value="نعم" <?php echo $getVal === 'نعم' ? 'selected' : ''; ?>>نعم</option>
                                         <option value="لا" <?php echo $getVal === 'لا' ? 'selected' : ''; ?>>لا</option>
                                     </select>
                                 <?php else: ?>
-                                    <input type="text" name="col_<?php echo $field['field_name']; ?>" value="<?php echo htmlspecialchars($getVal); ?>" placeholder="اكتب للفرز..." class="w-full px-2 py-1 bg-white border border-gray-200 rounded text-xs focus:outline-none">
+                                    <input type="text" name="col_<?php echo $field['field_name']; ?>" value="<?php echo htmlspecialchars($getVal); ?>" placeholder="اكتب للفرز..." class="w-full px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none font-bold text-gray-700">
                                 <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
@@ -293,55 +412,123 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
             <div class="flex space-x-2 space-x-reverse pt-2 border-t border-gray-100 justify-end">
                 <a href="index.php?page=dashboard-view" class="bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-2 px-4 rounded-lg text-xs transition">إعادة تعيين</a>
                 <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg text-xs transition flex items-center space-x-1.5 space-x-reverse shadow-sm">
-                    <i class="fa-solid fa-sync"></i>
-                    <span>تحديث المؤشرات والرسوم</span>
+                    <i class="fa-solid fa-sync text-white"></i>
+                    <span class="text-white">تحديث المؤشرات والرسوم</span>
                 </button>
             </div>
         </form>
     </div>
 
     <!-- ثانياً: كروت المؤشرات الإحصائية المصفاة (KPI Cards) -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 flex items-center justify-between hover:shadow-lg transition">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 font-sans">
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex items-center justify-between hover:shadow-xl transition duration-300">
             <div class="space-y-1">
-                <span class="text-xs font-semibold text-gray-400 block">إجمالي السجلات المطابقة للتصفية</span>
-                <span class="text-3xl font-extrabold text-slate-800"><?php echo $total_count; ?></span>
+                <span class="text-xs font-bold text-slate-500 block">إجمالي السجلات المطابقة للتصفية</span>
+                <span class="text-4xl font-black text-slate-900 font-sans"><?php echo $total_count; ?></span>
             </div>
-            <div class="p-3 bg-blue-50 text-blue-600 rounded-xl"><i class="fa-solid fa-folder-closed text-2xl"></i></div>
+            <div class="p-4 bg-blue-50/80 text-blue-600 rounded-2xl shadow-inner"><i class="fa-solid fa-folder-closed text-2xl"></i></div>
         </div>
-        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 flex items-center justify-between hover:shadow-lg transition">
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex items-center justify-between hover:shadow-xl transition duration-300">
             <div class="space-y-1">
-                <span class="text-xs font-semibold text-gray-400 block">المعاينات بالصور المرفقة</span>
-                <span class="text-3xl font-extrabold text-amber-600"><?php echo $photos_count; ?></span>
+                <span class="text-xs font-bold text-slate-500 block">المعاينات بالصور المرفقة</span>
+                <span class="text-4xl font-black text-amber-600 font-sans"><?php echo $photos_count; ?></span>
             </div>
-            <div class="p-3 bg-amber-50 text-amber-600 rounded-xl"><i class="fa-solid fa-camera text-2xl"></i></div>
+            <div class="p-4 bg-amber-50/80 text-amber-600 rounded-2xl shadow-inner"><i class="fa-solid fa-camera text-2xl"></i></div>
         </div>
-        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 flex items-center justify-between hover:shadow-lg transition">
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex items-center justify-between hover:shadow-xl transition duration-300">
             <div class="space-y-1">
-                <span class="text-xs font-semibold text-gray-400 block">الملفات والمستندات PDF</span>
-                <span class="text-3xl font-extrabold text-red-600"><?php echo $pdfs_count; ?></span>
+                <span class="text-xs font-bold text-slate-500 block">الملفات والمستندات PDF</span>
+                <span class="text-4xl font-black text-red-600 font-sans"><?php echo $pdfs_count; ?></span>
             </div>
-            <div class="p-3 bg-red-50 text-red-600 rounded-xl"><i class="fa-solid fa-file-pdf text-2xl"></i></div>
+            <div class="p-4 bg-red-50/80 text-red-600 rounded-2xl shadow-inner"><i class="fa-solid fa-file-pdf text-2xl"></i></div>
         </div>
     </div>
 
-    <!-- ثالثاً: الرسوم البيانية الأساسية المصفاة -->
+    <!-- موديول التوزيع الجغرافي ونسب التركز المكاني للحدود KML -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- أ. الرسم الدائري للتوزيع الجغرافي للمضلعات والحدود المعتمدة -->
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex flex-col justify-between h-96 lg:col-span-1 hover:shadow-lg transition duration-300">
+            <h4 class="text-sm font-black text-slate-900 mb-4 border-b border-gray-100 pb-2"><i class="fa-solid fa-chart-pie text-indigo-500 ml-1"></i> التوزيع والتركز الجغرافي للمخالفات بالحدود</h4>
+            <div class="flex-1 relative flex items-center justify-center">
+                <?php if (count($geo_chart_counts) === 0): ?>
+                    <p class="text-xs text-gray-400 font-bold">لا توجد إحداثيات لمعاينات السجل الميداني حالياً.</p>
+                <?php else: ?>
+                    <canvas id="geoChart" class="max-h-64"></canvas>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- ب. جدول الحصر والتركز المئوي الجغرافي التفصيلي للحدود والإدارات -->
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex flex-col justify-between h-96 lg:col-span-2 hover:shadow-lg transition duration-300">
+            <h4 class="text-sm font-black text-slate-900 mb-2 border-b border-gray-100 pb-2"><i class="fa-solid fa-list-check text-indigo-500 ml-1"></i> جدول الحصر والتركز المئوي الجغرافي للمناطق والحدود الإدارية:</h4>
+            <div class="flex-1 overflow-y-auto pr-1">
+                <table class="min-w-full divide-y divide-gray-200 text-right text-xs">
+                    <thead class="bg-slate-50 text-slate-900 font-black uppercase">
+                        <tr>
+                            <th class="px-4 py-2.5">المنطقة والحدود الإدارية KML</th>
+                            <th class="px-4 py-2.5">عدد الحالات الموثقة</th>
+                            <th class="px-4 py-2.5">النسبة المئوية من الحصر الكلي</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200 text-slate-900 font-black text-[11px]">
+                        <?php 
+                        $total_geo_counted = count($geo_records);
+                        $has_any_match = false;
+                        
+                        foreach ($boundary_polygons as $b_id => $b_data): 
+                            if ($b_data['count'] > 0):
+                                $has_any_match = true;
+                                $percentage = ($b_data['count'] / $total_geo_counted) * 100;
+                        ?>
+                            <tr class="hover:bg-gray-50/50 transition">
+                                <td class="px-4 py-2 flex items-center space-x-1.5 space-x-reverse">
+                                    <span class="w-3 h-1.5 rounded" style="background-color: <?php echo $b_data['color']; ?>;"></span>
+                                    <span><?php echo htmlspecialchars($b_data['name']); ?></span>
+                                </td>
+                                <td class="px-4 py-2 font-mono text-slate-700"><?php echo $b_data['count']; ?> معاينة ميدانية</td>
+                                <td class="px-4 py-2 font-mono text-indigo-600 font-black"><?php echo number_format($percentage, 1); ?> %</td>
+                            </tr>
+                        <?php 
+                            endif;
+                        endforeach; 
+
+                        if ($unassigned_geo_records > 0):
+                            $has_any_match = true;
+                            $percentage = ($unassigned_geo_records / $total_geo_counted) * 100;
+                        ?>
+                            <tr class="hover:bg-gray-50/50 transition bg-slate-50/40">
+                                <td class="px-4 py-2 text-gray-400 font-bold"><i class="fa-solid fa-triangle-exclamation text-yellow-500 ml-1"></i> خارج النطاق والحدود الإدارية</td>
+                                <td class="px-4 py-2 font-mono text-gray-400"><?php echo $unassigned_geo_records; ?> سجل</td>
+                                <td class="px-4 py-2 font-mono text-gray-400"><?php echo number_format($percentage, 1); ?> %</td>
+                            </tr>
+                        <?php endif; ?>
+
+                        <?php if (!$has_any_match): ?>
+                            <tr><td colspan="3" class="px-4 py-12 text-center text-gray-400 font-bold">لا توجد أي سجلات جغرافية مسجلة بداخل الحدود الإدارية الحالية.</td></tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- الرسوم البيانية الأساسية المصفاة -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 flex flex-col justify-between h-96">
-            <h4 class="text-sm font-bold text-gray-700 mb-4 border-b pb-2"><i class="fa-solid fa-chart-pie text-blue-500 ml-1"></i> التوزيع النسبي للسجلات المصفاة بالأقسام</h4>
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex flex-col justify-between h-96 hover:shadow-lg transition duration-300">
+            <h4 class="text-sm font-black text-slate-900 mb-4 border-b border-gray-100 pb-2"><i class="fa-solid fa-chart-pie text-blue-500 ml-1"></i> التوزيع النسبي للسجلات المصفاة بالأقسام</h4>
             <div class="flex-1 relative flex items-center justify-center">
                 <?php if (count($chart_counts) === 0): ?>
-                    <p class="text-xs text-gray-400 font-semibold">لا توجد بيانات مطابقة للرسم حالياً.</p>
+                    <p class="text-xs text-gray-400 font-bold">لا توجد بيانات مطابقة للرسم حالياً.</p>
                 <?php else: ?>
                     <canvas id="pieChart" class="max-h-64"></canvas>
                 <?php endif; ?>
             </div>
         </div>
-        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 flex flex-col justify-between h-96">
-            <h4 class="text-sm font-bold text-gray-700 mb-4 border-b pb-2"><i class="fa-solid fa-chart-line text-emerald-500 ml-1"></i> معدل التوثيق الشهري للمرشحات الحالية</h4>
+        <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 flex flex-col justify-between h-96 hover:shadow-lg transition duration-300">
+            <h4 class="text-sm font-black text-slate-900 mb-4 border-b border-gray-100 pb-2"><i class="fa-solid fa-chart-line text-emerald-500 ml-1"></i> معدل التوثيق الشهري للمرشحات الحالية</h4>
             <div class="flex-1 relative flex items-center justify-center">
                 <?php if (count($line_counts) === 0): ?>
-                    <p class="text-xs text-gray-400 font-semibold">لا توجد سجلات مطابقة للرسم الخطي حالياً.</p>
+                    <p class="text-xs text-gray-400 font-bold">لا توجد سجلات مطابقة للرسم الخطي حالياً.</p>
                 <?php else: ?>
                     <canvas id="lineChart" class="max-h-64"></canvas>
                 <?php endif; ?>
@@ -349,8 +536,8 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
         </div>
     </div>
 
-    <!-- رابعاً: [باني ومصمم الكروت والمؤشرات المخصصة المدمج بالكامل بصيغة مفرزة عصرية] -->
-    <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-4">
+    <!-- باني ومصمم الكروت والمؤشرات المخصصة المدمج بالكامل -->
+    <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 space-y-4">
         <div class="flex justify-between items-center border-b pb-3 border-gray-100">
             <div class="flex items-center space-x-3 space-x-reverse">
                 <div class="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
@@ -358,12 +545,12 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                 </div>
                 <div>
                     <h3 class="text-sm font-bold text-gray-800">باني ومصمم الكروت والمؤشرات المخصصة (KPIs)</h3>
-                    <p class="text-[10px] text-gray-400">اختر القسم وحدد الحقول ليقوم النظام ببناء كروت جرد ومؤشرات مستقلة فوراً.</p>
+                    <p class="text-[10px] text-gray-400 font-bold">اختر القسم وحدد الحقول ليقوم النظام ببناء كروت جرد ومؤشرات مستقلة فوراً.</p>
                 </div>
             </div>
             
             <?php if ($widget_type_id > 0 && count($widget_results) > 0): ?>
-                <button onclick="printCustomWidgets()" class="bg-slate-850 hover:bg-slate-850 text-gray-600 border hover:text-blue-600 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center space-x-1 space-x-reverse shadow-sm">
+                <button onclick="printCustomWidgets()" class="bg-slate-850 hover:bg-slate-800 text-slate-800 border hover:text-blue-600 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center space-x-1 space-x-reverse shadow-sm">
                     <i class="fa-solid fa-print"></i>
                     <span>طباعة تقرير المؤشرات</span>
                 </button>
@@ -379,10 +566,10 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
             <input type="hidden" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>">
             <input type="hidden" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>">
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-end font-bold">
                 <div>
-                    <label class="block text-gray-600 text-xs font-bold mb-1.5">1. حدد القسم الميداني المطلوب حصره:</label>
-                    <select name="widget_type_id" id="widget_type_selector" required onchange="filterWidgetFields(this.value)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-bold text-gray-700 focus:outline-none bg-white font-sans">
+                    <label class="block text-slate-650 text-xs font-bold mb-2">1. حدد القسم الميداني المطلوب حصره:</label>
+                    <select name="widget_type_id" id="widget_type_selector" required onchange="filterWidgetFields(this.value)" class="w-full px-3 py-2 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 focus:outline-none bg-white font-sans">
                         <option value="">-- اختر القسم الميداني --</option>
                         <?php foreach ($types as $type): ?>
                             <option value="<?php echo $type['id']; ?>" <?php echo $widget_type_id === intval($type['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($type['label']); ?></option>
@@ -391,10 +578,9 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                 </div>
 
                 <div class="md:col-span-2 space-y-1.5">
-                    <label class="block text-gray-600 text-xs font-bold"><i class="fa-solid fa-list-check text-indigo-500"></i> 2. حدد الحقول الفنية المُراد إبراز كروت وإحصائيات تكرارها:</label>
-                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50 p-3 rounded-xl border max-h-32 overflow-y-auto">
+                    <label class="block text-slate-650 text-xs font-bold"><i class="fa-solid fa-list-check text-indigo-500"></i> 2. حدد الحقول الفنية المُراد إبراز كروت وإحصائيات تكرارها:</label>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2 bg-gray-50 p-3 rounded-xl border border-gray-150 max-h-32 overflow-y-auto">
                         <?php foreach ($fields_list as $f): 
-                            // معالجة الفراغات والمسافات (Spaces) من الـ IDs بقاعدة البيانات لتفادي المشاكل
                             $cleaned_ids = implode(',', array_map('trim', explode(',', $f['record_type_id'])));
                         ?>
                             <label data-widget-field-type="<?php echo $cleaned_ids; ?>" class="widget-field-cb-wrapper hidden flex items-center space-x-2 space-x-reverse text-[10px] text-gray-700 cursor-pointer select-none">
@@ -407,14 +593,14 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
             </div>
 
             <div class="flex justify-end pt-2 border-t">
-                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-xl text-xs transition shadow-sm flex items-center space-x-1.5 space-x-reverse">
-                    <i class="fa-solid fa-wand-magic-sparkles"></i>
-                    <span>توليد وتشييد الكروت الإحصائية المخصصة</span>
+                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-black py-2.5 px-6 rounded-xl text-xs transition shadow-sm flex items-center space-x-1.5 space-x-reverse">
+                    <i class="fa-solid fa-wand-magic-sparkles text-white"></i>
+                    <span class="text-white">توليد وتشييد الكروت الإحصائية المخصصة</span>
                 </button>
             </div>
         </form>
 
-        <!-- مخرجات كروت التجميع الموحدة المصلحة (كارت مستقل لكل حقل مفرز بالعدد فقط) -->
+        <!-- مخرجات كروت التجميع الموحدة المصلحة -->
         <?php if ($widget_type_id > 0 && count($widget_results) > 0): ?>
             <div class="space-y-6 pt-4" id="generated-widgets-area">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6" id="kpi-cards-grid">
@@ -426,7 +612,7 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                             <span class="text-slate-400 text-xs"><i class="fa-solid fa-folder-closed"></i></span>
                         </div>
                         <div class="flex items-baseline space-x-1 space-x-reverse mt-4">
-                            <span class="text-3xl font-black font-sans"><?php echo $widget_total_count; ?></span>
+                            <span class="text-4xl font-black font-sans"><?php echo $widget_total_count; ?></span>
                             <span class="text-[10px] text-slate-400 font-bold">معاينة</span>
                         </div>
                     </div>
@@ -446,13 +632,12 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                         $palette = $colors_palette[$color_idx % count($colors_palette)];
                         $color_idx++;
 
-                        // حساب مجموع الإدخالات المعبأة فعلياً لهذا الحقل
                         $total_field_filled = 0;
                         foreach ($res['data'] as $row) { $total_field_filled += $row['cnt']; }
                     ?>
-                        <div class="kpi-print-card <?php echo $palette['bg']; ?> <?php echo $palette['border']; ?> p-5 rounded-2xl shadow-sm border flex flex-col justify-between hover:shadow-md transition page-break-inside-avoid min-h-[160px]">
-                            <div class="flex justify-between items-start border-b pb-2 mb-3 border-gray-100">
-                                <span class="text-xs font-bold text-gray-700">
+                        <div class="kpi-print-card <?php echo $palette['bg']; ?> <?php echo $palette['border']; ?> p-5 rounded-2xl shadow-sm border flex flex-col justify-between hover:shadow-lg transition duration-300 page-break-inside-avoid min-h-[160px]">
+                            <div class="flex justify-between items-start border-b pb-2 mb-3 border-gray-200/60">
+                                <span class="text-xs font-black text-slate-800">
                                     <i class="fa-solid <?php echo $palette['icon']; ?> <?php echo $palette['text']; ?> ml-1"></i>
                                     <?php echo htmlspecialchars($res['label']); ?>
                                 </span>
@@ -460,24 +645,30 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                             </div>
 
                             <div class="flex-1 flex flex-col justify-center">
-                                <?php if ($res['type'] === 'select'): ?>
-                                    <!-- إذا كان الحقل قائمة منسدلة: نعرض فقط الخيارات وأعدادها بشكل مختصر جداً بدون قوائم فرعية معقدة -->
-                                    <div class="space-y-1.5 text-xs text-gray-600">
+                                <?php if ($res['type'] === 'select' || $res['type'] === 'checkbox'): ?>
+                                    <div class="space-y-1.5 text-xs text-slate-700">
                                         <?php if (count($res['data']) === 0): ?>
-                                            <span class="text-gray-400 text-center block text-[10px]">لا توجد خيارات مسجلة</span>
+                                            <span class="text-gray-400 text-center block text-[10px] font-bold">لا توجد خيارات مسجلة</span>
                                         <?php else: ?>
                                             <?php foreach ($res['data'] as $row): ?>
-                                                <div class="flex justify-between items-center bg-white/60 px-2 py-1 rounded-md border border-gray-50">
-                                                    <span class="font-bold text-gray-700 text-[10px]"><?php echo htmlspecialchars($row['val']); ?>:</span>
-                                                    <span class="font-mono font-black <?php echo $palette['text']; ?>"><?php echo $row['cnt']; ?></span>
+                                                <div class="flex justify-between items-center bg-white/70 px-2.5 py-1 rounded-lg border border-gray-150/40">
+                                                    <span class="font-black text-slate-900 text-[11px]">
+                                                        <?php if ($row['val'] === 'نعم'): ?>
+                                                            <span class="text-emerald-700 font-black"><i class="fa-solid fa-circle-check ml-1 text-emerald-600"></i> نعم</span>
+                                                        <?php elseif ($row['val'] === 'لا'): ?>
+                                                            <span class="text-red-700 font-black"><i class="fa-solid fa-circle-xmark ml-1 text-red-500"></i> لا</span>
+                                                        <?php else: ?>
+                                                            <?php echo htmlspecialchars((string)$row['val']); ?>
+                                                        <?php endif; ?>:
+                                                    </span>
+                                                    <span class="font-mono font-black <?php echo $palette['text']; ?> text-xs"><?php echo $row['cnt']; ?></span>
                                                 </div>
                                             <?php endforeach; ?>
                                         <?php endif; ?>
                                     </div>
                                 <?php else: ?>
-                                    <!-- إذا كان الحقل نصي أو رقمي عادي: نعرض فقط إجمالي السجلات التي تم توثيقها بداخل هذا الحقل -->
                                     <div class="text-center py-2">
-                                        <span class="text-3xl font-black <?php echo $palette['count']; ?> font-sans block"><?php echo $total_field_filled; ?></span>
+                                        <span class="text-4xl font-black <?php echo $palette['count']; ?> font-sans block"><?php echo $total_field_filled; ?></span>
                                         <span class="text-[9px] text-gray-400 font-bold block mt-1">حالة موثقة مسجلة</span>
                                     </div>
                                 <?php endif; ?>
@@ -490,7 +681,7 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
     </div>
 
     <!-- خامساً: لوحة التحليل التفصيلي الإحصائي للحقول المخصصة ومخرجاتها -->
-    <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-100 space-y-6">
+    <div class="bg-white p-6 rounded-2xl shadow-md border border-gray-150 space-y-6">
         <div class="flex justify-between items-center border-b pb-3">
             <div class="flex items-center space-x-3 space-x-reverse">
                 <div class="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
@@ -498,20 +689,19 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                 </div>
                 <div>
                     <h3 class="text-sm font-bold text-gray-800">التحليل الإحصائي التلقائي للحقول الفنية والمخصصة</h3>
-                    <p class="text-[10px] text-gray-400">اختر الحقل والموظف والمدة، وسيقوم النظام بتجميع وعد وتحليل القيم فورياً بصرياً وورقياً.</p>
+                    <p class="text-[10px] text-gray-400 font-bold">اختر الحقل والموظف والمدة، وسيقوم النظام بتجميع وعد وتحليل القيم فورياً بصرياً وورقياً.</p>
                 </div>
             </div>
             
             <?php if (!empty($rf_field) && count($field_analysis_data) > 0): ?>
-                <button onclick="printFieldAnalysis()" class="bg-slate-850 hover:bg-slate-850 text-gray-600 border hover:text-blue-600 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center space-x-1 space-x-reverse shadow-sm">
+                <button onclick="printFieldAnalysis()" class="bg-slate-850 hover:bg-slate-800 text-slate-800 border hover:text-blue-600 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center space-x-1 space-x-reverse shadow-sm">
                     <i class="fa-solid fa-print"></i>
                     <span>طباعة هذا التحليل الفني</span>
                 </button>
             <?php endif; ?>
         </div>
 
-        <!-- فورم الاستعلام والفلترة الخاص بالتحليل الفني للحقل -->
-        <form method="GET" action="index.php" class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-50/50 p-4 rounded-xl border border-gray-100 items-end">
+        <form method="GET" action="index.php" class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-50/50 p-4 rounded-xl border border-gray-150 items-end">
             <input type="hidden" name="page" value="dashboard-view">
             
             <!-- لتوريث فلاتر الداش بورد السابقة لعدم تصفيرها -->
@@ -522,8 +712,8 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
 
             <!-- 1. اختيار الحقل المستهدف للتحليل -->
             <div>
-                <label class="block text-gray-600 text-xs font-bold mb-1">اختر الحقل المراد تحليله إحصائياً:</label>
-                <select name="report_field" id="report_field_selector" required class="w-full px-3 py-2 border rounded-lg text-xs font-bold text-gray-700 focus:outline-none bg-white font-sans">
+                <label class="block text-slate-650 text-xs font-bold mb-1">اختر الحقل المراد تحليله إحصائياً:</label>
+                <select name="report_field" id="report_field_selector" required class="w-full px-3 py-2 border rounded-xl text-xs font-bold text-gray-700 focus:outline-none bg-white font-sans">
                     <option value="">-- اختر الحقل الفني --</option>
                     <?php foreach ($fields_list as $f): ?>
                         <option value="<?php echo $f['field_name']; ?>" <?php echo $rf_field === $f['field_name'] ? 'selected' : ''; ?>><?php echo htmlspecialchars($f['label']); ?></option>
@@ -533,8 +723,8 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
 
             <!-- 2. تحديد الموظف للتحليل -->
             <div>
-                <label class="block text-gray-600 text-xs font-bold mb-1">فلترة بمسؤول التوثيق:</label>
-                <select name="report_user" class="w-full px-3 py-2 border rounded-lg text-xs font-bold text-gray-700 focus:outline-none bg-white font-sans">
+                <label class="block text-slate-650 text-xs font-bold mb-1">فلترة بمسؤول التوثيق:</label>
+                <select name="report_user" class="w-full px-3 py-2 border rounded-xl text-xs font-bold text-gray-700 focus:outline-none bg-white font-sans">
                     <option value="">-- كل الموظفين --</option>
                     <?php foreach ($users as $u): ?>
                         <option value="<?php echo $u['id']; ?>" <?php echo $rf_user === intval($u['id']) ? 'selected' : ''; ?>><?php echo htmlspecialchars($u['username']); ?></option>
@@ -544,15 +734,15 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
 
             <!-- 3. المدى الزمني للتحليل -->
             <div>
-                <label class="block text-gray-600 text-xs font-bold mb-1">من تاريخ:</label>
-                <input type="date" name="report_date_from" value="<?php echo htmlspecialchars($rf_from); ?>" class="w-full px-3 py-1.5 border rounded-lg text-xs text-gray-700 focus:outline-none bg-white">
+                <label class="block text-slate-650 text-xs font-bold mb-1">من تاريخ:</label>
+                <input type="date" name="report_date_from" value="<?php echo htmlspecialchars($rf_from); ?>" class="w-full px-3 py-1.5 border rounded-xl text-xs font-bold text-gray-700 focus:outline-none bg-white">
             </div>
             <div>
-                <label class="block text-gray-600 text-xs font-bold mb-1">إلى تاريخ:</label>
+                <label class="block text-slate-650 text-xs font-bold mb-1">إلى تاريخ:</label>
                 <div class="grid grid-cols-3 gap-2">
-                    <input type="date" name="report_date_to" value="<?php echo htmlspecialchars($rf_to); ?>" class="col-span-2 px-3 py-1.5 border rounded-lg text-xs text-gray-700 focus:outline-none bg-white">
-                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs flex items-center justify-center shadow" title="بدء التحليل الفني">
-                        <i class="fa-solid fa-chart-line text-sm"></i>
+                    <input type="date" name="report_date_to" value="<?php echo htmlspecialchars($rf_to); ?>" class="col-span-2 px-3 py-1.5 border rounded-xl text-xs font-bold text-gray-700 focus:outline-none bg-white">
+                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs flex items-center justify-center shadow" title="بدء التحليل الفني">
+                        <i class="fa-solid fa-chart-line text-sm text-white"></i>
                     </button>
                 </div>
             </div>
@@ -566,7 +756,7 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-8 pt-4 items-center">
                     
                     <!-- أ. الرسم البياني العمودي -->
-                    <div class="flex flex-col h-80 justify-between p-4 bg-gray-50/50 rounded-xl border border-gray-100">
+                    <div class="flex flex-col h-80 justify-between p-4 bg-gray-50/50 rounded-xl border border-gray-150">
                         <h4 class="text-xs font-bold text-gray-600 border-b pb-1.5 text-center"><i class="fa-solid fa-chart-simple text-indigo-500 ml-1"></i> رسم بياني لتوزيع تكرار القيم</h4>
                         <div class="flex-1 relative flex items-center justify-center">
                             <canvas id="fieldAnalysisChart" class="max-h-64"></canvas>
@@ -578,26 +768,34 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
                         <span class="text-xs font-bold text-gray-700 block"><i class="fa-solid fa-list-check text-indigo-500 ml-1"></i> جدول حصر التوزيع المئوي للقيم:</span>
                         <div class="overflow-x-auto rounded-xl border border-gray-200">
                             <table class="min-w-full divide-y divide-gray-200 text-right text-xs">
-                                <thead class="bg-gray-100 text-gray-700 font-bold uppercase">
+                                <thead class="bg-slate-100 text-slate-900 font-black uppercase">
                                     <tr>
-                                        <th class="px-4 py-2.5">القيمة المدونة بالحقل</th>
-                                        <th class="px-4 py-2.5">عدد مرات التكرار</th>
-                                        <th class="px-4 py-2.5">النسبة المئوية من الحصر</th>
+                                        <th class="px-4 py-3">القيمة المدونة بالحقل</th>
+                                        <th class="px-4 py-3">عدد مرات التكرار</th>
+                                        <th class="px-4 py-3">النسبة المئوية من الحصر</th>
                                     </tr>
                                 </thead>
-                                <tbody class="bg-white divide-y divide-gray-100 text-gray-600 font-semibold">
+                                <tbody class="bg-white divide-y divide-gray-100 text-slate-900 font-black">
                                     <?php foreach ($field_analysis_data as $row): 
                                         $percentage = ($row['cnt'] / $total_rf_records) * 100;
                                     ?>
                                         <tr class="hover:bg-gray-50">
-                                            <td class="px-4 py-2 text-slate-800 font-bold"><?php echo htmlspecialchars($row['val']); ?></td>
-                                            <td class="px-4 py-2 font-mono text-slate-600"><?php echo $row['cnt']; ?> سجل</td>
-                                            <td class="px-4 py-2 font-mono text-emerald-600 font-bold"><?php echo number_format($percentage, 1); ?> %</td>
+                                            <td class="px-4 py-2.5 text-slate-900 font-black">
+                                                <?php if ($row['val'] === 'نعم'): ?>
+                                                    <span class="text-emerald-700"><i class="fa-solid fa-circle-check ml-1 text-emerald-600"></i> نعم</span>
+                                                <?php elseif ($row['val'] === 'لا'): ?>
+                                                    <span class="text-red-700"><i class="fa-solid fa-circle-xmark ml-1 text-red-500"></i> لا</span>
+                                                <?php else: ?>
+                                                    <?php echo htmlspecialchars($row['val']); ?>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td class="px-4 py-2.5 font-mono text-slate-700"><?php echo $row['cnt']; ?> سجل</td>
+                                            <td class="px-4 py-2.5 font-mono text-emerald-600 font-black"><?php echo number_format($percentage, 1); ?> %</td>
                                         </tr>
                                     <?php endforeach; ?>
-                                    <tr class="bg-slate-50 font-extrabold text-slate-800">
-                                        <td class="px-4 py-2 border-t">إجمالي العينات والمدخلات الفنية:</td>
-                                        <td class="px-4 py-2 border-t font-mono" colspan="2"><?php echo $total_rf_records; ?> سجل موثق</td>
+                                    <tr class="bg-slate-50 font-extrabold text-slate-900">
+                                        <td class="px-4 py-3 border-t">إجمالي العينات والمدخلات الفنية:</td>
+                                        <td class="px-4 py-3 border-t font-mono" colspan="2"><?php echo $total_rf_records; ?> سجل موثق</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -678,7 +876,32 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
         });
         <?php endif; ?>
 
-        // جـ. تفعيل الرسم البياني العمودي للتحليل الإحصائي
+        // [تفعيل الترقية للموديول رقم 2]: تشغيل الرسم الدائري الجديد للتركز الجغرافي للحدود KML
+        <?php if (count($geo_chart_counts) > 0): ?>
+        const ctxGeo = document.getElementById('geoChart').getContext('2d');
+        new Chart(ctxGeo, {
+            type: 'doughnut',
+            data: {
+                labels: <?php echo json_encode($geo_chart_labels, JSON_UNESCAPED_UNICODE); ?>,
+                datasets: [{
+                    data: <?php echo json_encode($geo_chart_counts); ?>,
+                    backgroundColor: ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#14b8a6', '#64748b'],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { font: { family: 'Cairo', size: 9 } }
+                    }
+                }
+            }
+        });
+        <?php endif; ?>
+
+        // جـ. تفعيل الرسم البياني العمودي للتحليل الإحصائي للحقل
         <?php if (!empty($rf_field) && count($field_analysis_data) > 0): ?>
         const ctxRF = document.getElementById('fieldAnalysisChart').getContext('2d');
         new Chart(ctxRF, {
@@ -710,7 +933,7 @@ $users = $pdo->query("SELECT id, username FROM users ORDER BY id DESC")->fetchAl
         document.getElementById('filters-arrow').classList.toggle('rotate-180');
     }
 
-    // [تحديث تفاعلي]: دالة تصفية الحقول المخصصة لباني الكروت بناء على القسم المختار لتلافي التكرار والازدواجية
+    // دالة تصفية الحقول المخصصة لباني الكروت بناء على القسم المختار لتلافي التكرار والازدواجية
     function filterWidgetFields(recordTypeId) {
         document.querySelectorAll('.widget-field-cb-wrapper').forEach(wrapper => {
             const fieldTypeIdStr = wrapper.getAttribute('data-widget-field-type');

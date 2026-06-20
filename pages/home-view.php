@@ -1,13 +1,14 @@
 <?php
+// pages/home-view.php - البوابة الرئيسية التفاعلية للخدمات والموديولات (النسخة النهائية المحدثة لتشمل 15 موديول بالكامل)
 if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
 }
 
 $role = $_SESSION['role'];
 $username = $_SESSION['username'];
-$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', $_SESSION['allowed_pages']) : [];
+$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', (string)$_SESSION['allowed_pages']) : [];
 
-// مصفوفة كروت الأقسام الشاملة المحدثة بجميع موديولات وخدمات المنصة الكلية (14 كارت تفاعلي)
+// مصفوفة كروت الأقسام الشاملة المحدثة بجميع موديولات وخدمات المنصة الكلية (15 كارت تفاعلي منظم)
 $portal_cards = [
     // أ. الموديولات التشغيلية والميدانية المتاحة للموظفين المصرح لهم
     'add-record' => [
@@ -78,6 +79,12 @@ $portal_cards = [
         'icon' => 'fa-database',
         'bg_color' => 'bg-cyan-50 text-cyan-600 border-cyan-100 hover:border-cyan-300'
     ],
+    'data-repair' => [ // موديول مطهر ومصلح البيانات المطور (جديد ومدرج بالكامل)
+        'title' => 'محرك إصلاح وتطهير البيانات الفوري',
+        'desc' => 'محرك ذكي لاستكشاف وتصحيح وتوحيد الكلمات والحروف المكررة والخاطئة بضغطة زر.',
+        'icon' => 'fa-wand-magic-sparkles',
+        'bg_color' => 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:border-emerald-300'
+    ],
     'print-settings' => [
         'title' => 'تخصيص قوالب وإعدادات الطباعة',
         'desc' => 'بناء قوالب التقارير الورقية المعتمدة، ترويسات الصناديق، وتحديد التوقيعات الخمسة الرسمية.',
@@ -101,7 +108,7 @@ $portal_cards = [
 ];
 ?>
 
-<div class="space-y-8 max-w-6xl mx-auto animate-fade">
+<div class="space-y-8 max-w-6xl mx-auto animate-fade text-right" dir="rtl">
     
     <!-- بوكس الترحيب الشامل والراقي بالمدير أو الموظف -->
     <div class="bg-gradient-to-r from-slate-800 to-slate-900 text-white p-8 rounded-3xl shadow-lg border border-slate-700 flex flex-col md:flex-row justify-between items-center gap-6">
@@ -123,7 +130,8 @@ $portal_cards = [
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             <?php 
             $rendered_cards = 0;
-            $admin_only_modules = ['settings-view', 'users-view', 'print-settings', 'backup-view', 'audit-logs'];
+            // حظر الحقول وتأمينها رقابياً للأدمن فقط بداخل مصفوفة الحظر الشاملة
+            $admin_only_modules = ['settings-view', 'users-view', 'print-settings', 'backup-view', 'audit-logs', 'data-repair'];
             $free_modules = ['profile-view'];
 
             foreach ($portal_cards as $slug => $card): 
