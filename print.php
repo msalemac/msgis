@@ -110,17 +110,17 @@ try {
 
     /**
      * دالة معالجة الرموز والأكواد المختصرة (Shortcode Parser)
-     * تقوم بمسح واستبدال الرموز المكتوبة بقيم السجل الفعلية بذكاء تام
+     * تقوم بمسح واستبدال الرموز المكتوبة بقيم السجل الفعلية بذكاء تام مع التوافق التام مع PHP 8.4
      */
     function parse_print_shortcodes($text, $record, $dynamic_values, $display_point_number, $display_transaction_number) {
         if (empty($text)) {
             return '';
         }
 
-        // 1. مصفوفة الاستبدال الافتراضية للرموز الأساسية بالنظام
+        // 1. مصفوفة الاستبدال الافتراضية للرموز الأساسية بالنظام مع الصب القسري للنصوص (String Casting)
         $replacements = [
-            '{point_number}'       => $display_point_number,
-            '{transaction_number}' => $display_transaction_number,
+            '{point_number}'       => htmlspecialchars((string)($display_point_number ?? '')),
+            '{transaction_number}' => htmlspecialchars((string)($display_transaction_number ?? '')),
             '{date}'               => date('Y-m-d', strtotime($record['created_at'])),
             '{time}'               => date('H:i', strtotime($record['created_at'])),
             '{latitude}'           => htmlspecialchars((string)($record['latitude'] ?? '')),
@@ -130,7 +130,7 @@ try {
 
         // 2. حقن حقول السجل الديناميكية النشطة تلقائياً كرموز مختصرة متاحة للاستبدال
         foreach ($dynamic_values as $key => $val) {
-            $replacements['{' . $key . '}'] = htmlspecialchars((string)$val);
+            $replacements['{' . $key . '}'] = htmlspecialchars((string)($val ?? ''));
         }
 
         return strtr($text, $replacements);
@@ -147,7 +147,7 @@ try {
     <title>طباعة محضر معاينة #<?php echo $record_id; ?></title>
     
     <!-- خطوط الويب للطباعة الرسمية الموحدة -->
-    <link href="https://fonts.googleapis.com/css2?family=<?php echo $template && !empty($template['header_font']) ? $template['header_font'] : 'Cairo'; ?>:wght@700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=<?php echo $template && !empty($template['header_font']) ? htmlspecialchars((string)$template['header_font']) : 'Cairo'; ?>:wght@700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
@@ -158,7 +158,7 @@ try {
     <style>
         /* تطبيق الفونت واللون والوزن العريض الصارم لضمان القراءة بوضوح بعد الطباعة الورقية */
         body, span, div, p, h1, h2, h3, h4, td, th, footer, header, table, select, input {
-            font-family: '<?php echo $template && !empty($template['header_font']) ? $template['header_font'] : 'Cairo'; ?>', sans-serif !important;
+            font-family: '<?php echo $template && !empty($template['header_font']) ? htmlspecialchars((string)$template['header_font']) : 'Cairo'; ?>', sans-serif !important;
             color: #000000 !important;
             font-weight: 700 !important; 
             -webkit-print-color-adjust: exact !important;
@@ -250,9 +250,9 @@ try {
                         <?php echo $template['header_right_html']; ?>
                     <?php else: ?>
                         <?php if ($template && !empty($template['header_right_1'])): ?>
-                            <?php echo htmlspecialchars($template['header_right_1']); ?><br>
-                            <?php echo htmlspecialchars($template['header_right_2']); ?><br>
-                            <?php echo htmlspecialchars($template['header_right_3']); ?>
+                            <?php echo htmlspecialchars((string)$template['header_right_1']); ?><br>
+                            <?php echo htmlspecialchars((string)$template['header_right_2']); ?><br>
+                            <?php echo htmlspecialchars((string)$template['header_right_3']); ?>
                         <?php else: ?>
                             محافظة الاسماعيلية<br>
                             حي ثان<br>
@@ -267,7 +267,7 @@ try {
                         <?php echo $template['header_middle_html']; ?>
                     <?php else: ?>
                         <h1 class="text-xs font-black text-black leading-normal">
-                            <?php echo htmlspecialchars($page_title_text); ?>
+                            <?php echo htmlspecialchars((string)$page_title_text); ?>
                         </h1>
                     <?php endif; ?>
                 </div>
@@ -278,7 +278,7 @@ try {
                         <?php echo $template['header_left_html']; ?>
                     <?php else: ?>
                         <?php if ($template && $template['show_logo'] == 1 && !empty($template['logo_path'])): ?>
-                            <img src="<?php echo htmlspecialchars($template['logo_path']); ?>" class="w-10 h-10 object-contain mb-1">
+                            <img src="<?php echo htmlspecialchars((string)$template['logo_path']); ?>" class="w-10 h-10 object-contain mb-1">
                         <?php endif; ?>
                         <div class="text-[8px] text-gray-500 leading-normal text-left font-bold">
                             التاريخ: <?php echo date('Y-m-d', strtotime($record['created_at'])); ?><br>
@@ -291,9 +291,9 @@ try {
 
             <!-- شريط المعاملة والمحاضر -->
             <div class="bg-gray-50 border border-gray-200 text-center py-1.5 px-4 rounded-xl flex justify-around items-center font-bold text-[11px] mb-4 shadow-sm text-black avoid-break">
-                <div>رقم النقطة: <span class="font-mono text-xs text-blue-600 font-black"><?php echo htmlspecialchars($display_point_number); ?></span></div>
+                <div>رقم النقطة: <span class="font-mono text-xs text-blue-600 font-black"><?php echo htmlspecialchars((string)$display_point_number); ?></span></div>
                 <div class="text-gray-300 font-normal">|</div>
-                <div>رقم المعاملة: <span class="font-mono text-xs text-blue-600 font-black"><?php echo htmlspecialchars($display_transaction_number); ?></span></div>
+                <div>رقم المعاملة: <span class="font-mono text-xs text-blue-600 font-black"><?php echo htmlspecialchars((string)$display_transaction_number); ?></span></div>
             </div>
 
             <!-- عرض النص المخصص العلوي مع تفعيل محرك الرموز المختصرة (Shortcodes) -->
@@ -320,7 +320,7 @@ try {
                         <div class="print-card w-full flex flex-col" style="font-size: <?php echo $table_font_size; ?>pt !important;">
                             <div class="flex items-center space-x-2 space-x-reverse px-4 py-1.5 bg-slate-200 text-black font-black border-b border-slate-300">
                                 <i class="fa-solid fa-table-cells text-[10px] text-emerald-600"></i>
-                                <span class="text-[10px]"><?php echo htmlspecialchars($table['title']); ?></span>
+                                <span class="text-[10px]"><?php echo htmlspecialchars((string)$table['title']); ?></span>
                             </div>
                             <div class="p-2 overflow-x-auto">
                                 <table class="w-full border-collapse border border-black text-right" style="font-size: <?php echo $table_font_size; ?>pt !important;">
@@ -374,7 +374,7 @@ try {
                                     <div class="print-card <?php echo $box_width_class; ?> flex flex-col">
                                         <div class="flex items-center space-x-2 space-x-reverse px-4 py-1.5 bg-slate-200 text-black font-black border-b border-slate-300">
                                             <i class="fa-regular fa-folder-open text-[10px] text-blue-600"></i>
-                                            <span class="text-[10px]"><?php echo htmlspecialchars($groupTitle); ?></span>
+                                            <span class="text-[10px]"><?php echo htmlspecialchars((string)$groupTitle); ?></span>
                                         </div>
                                         <div class="p-3 flex flex-col space-y-2 text-[10px] leading-normal" style="padding: <?php echo $template && intval($template['card_padding_px']) > 0 ? intval($template['card_padding_px']) : '12'; ?>px;">
                                             <?php foreach ($fields as $field): 
@@ -382,7 +382,7 @@ try {
                                                 if ($val === '' || $val === '-') continue;
                                             ?>
                                                 <div class="flex justify-start items-center border-b border-gray-100 pb-1 text-right">
-                                                    <span class="text-slate-900 font-black ml-2"><?php echo htmlspecialchars($field['label']); ?>:</span>
+                                                    <span class="text-slate-900 font-black ml-2"><?php echo htmlspecialchars((string)$field['label']); ?>:</span>
                                                     <span class="font-black text-black"><?php echo htmlspecialchars($val); ?></span>
                                                 </div>
                                             <?php endforeach; ?>
@@ -406,9 +406,9 @@ try {
                             </div>
                             <div id="mini-map" class="h-44 rounded-lg border border-gray-150 shadow-inner z-0"></div>
                             <div class="bg-slate-50 border border-slate-200 p-2 rounded-lg text-center font-mono text-[9px] space-y-0.5 text-black font-black">
-                                <div><span class="font-bold text-gray-400 font-sans">خط العرض (Lat):</span> <?php echo htmlspecialchars($record['latitude']); ?></div>
+                                <div><span class="font-bold text-gray-400 font-sans">خط العرض (Lat):</span> <?php echo htmlspecialchars((string)($record['latitude'] ?? '')); ?></div>
                                 <div class="border-t border-slate-200/40 my-0.5"></div>
-                                <div><span class="font-bold text-gray-400 font-sans">خط الطول (Lng):</span> <?php echo htmlspecialchars($record['longitude']); ?></div>
+                                <div><span class="font-bold text-gray-400 font-sans">خط الطول (Lng):</span> <?php echo htmlspecialchars((string)($record['longitude'] ?? '')); ?></div>
                             </div>
                         </div>
                     <?php endif; ?>
@@ -421,7 +421,7 @@ try {
                                 <span>صورة المعاينة الميدانية</span>
                             </div>
                             <div class="flex justify-center border border-gray-100 p-0.5 rounded bg-gray-50/10">
-                                <img src="<?php echo htmlspecialchars($record['photo_path']); ?>" class="max-h-32 w-auto object-contain rounded">
+                                <img src="<?php echo htmlspecialchars((string)$record['photo_path']); ?>" class="max-h-32 w-auto object-contain rounded">
                             </div>
                         </div>
                     <?php endif; ?>
@@ -447,7 +447,7 @@ try {
             <div class="mt-6 avoid-break w-full">
                 <!-- عنوان لجنة المعاينة الفرعي -->
                 <div class="text-center font-black text-[10px] mb-3 text-black">
-                    <?php echo htmlspecialchars($committee_data['title'] ?? 'أعضاء اللجنة المشكلة للمعاينة'); ?>
+                    <?php echo htmlspecialchars((string)($committee_data['title'] ?? 'أعضاء اللجنة المشكلة للمعاينة')); ?>
                 </div>
                 <div class="w-full">
                     <table class="w-full border-collapse border-2 border-black text-right text-[10px] leading-normal">
@@ -463,8 +463,8 @@ try {
                                 if (isset($member['show']) && $member['show'] == 1):
                             ?>
                                 <tr class="border-b border-black">
-                                    <td class="border-l border-black p-2.5 font-black text-black align-middle"><?php echo htmlspecialchars($member['name'] ?? ''); ?></td>
-                                    <td class="border-l border-black p-2.5 font-black text-black align-middle text-center"><?php echo htmlspecialchars($member['role'] ?? ''); ?></td>
+                                    <td class="border-l border-black p-2.5 font-black text-black align-middle"><?php echo htmlspecialchars((string)($member['name'] ?? '')); ?></td>
+                                    <td class="border-l border-black p-2.5 font-black text-black align-middle text-center"><?php echo htmlspecialchars((string)($member['role'] ?? '')); ?></td>
                                     <td class="p-2.5 font-black text-black align-middle text-center font-mono text-[9px] text-gray-300">.......................</td>
                                 </tr>
                             <?php 
@@ -480,7 +480,7 @@ try {
         <!-- الجزء السفلي الخاص بالتوقيعات الخمسة المعتمدة بقفل التنسيق الصارم -->
         <div class="mt-6 avoid-break">
             <div class="text-center font-black text-[10px] mb-3 text-black">
-                <?php echo $template && !empty($template['signatures_title']) ? htmlspecialchars($template['signatures_title']) : '_________ التوقيعات _________'; ?>
+                <?php echo $template && !empty($template['signatures_title']) ? htmlspecialchars((string)$template['signatures_title']) : '_________ التوقيعات _________'; ?>
             </div>
             <div class="flex justify-around items-start text-center space-x-4 space-x-reverse">
                 <?php 
@@ -491,9 +491,9 @@ try {
                             $printed_sigs_count++;
                             echo "
                             <div class='flex-1 border-t border-dashed border-slate-800 pt-2'>
-                                <span class='font-black text-black block mb-5 text-[9px]'>" . htmlspecialchars($template["sig{$i}_title"]) . "</span>";
+                                <span class='font-black text-black block mb-5 text-[9px]'>" . htmlspecialchars((string)($template["sig{$i}_title"] ?? '')) . "</span>";
                             if (!empty($template["sig{$i}_name"])) {
-                                echo "<span class='text-[8px] text-black font-black block mb-1'>" . htmlspecialchars($template["sig{$i}_name"]) . "</span>";
+                                echo "<span class='text-[8px] text-black font-black block mb-1'>" . htmlspecialchars((string)($template["sig{$i}_name"] ?? '')) . "</span>";
                             }
                             echo "
                                 <span class='text-[8px] text-gray-400 block font-normal'>التوقيع: ............................</span>
@@ -530,7 +530,7 @@ try {
                 <?php if ($template && !empty($template['footer_middle_html'])): ?>
                     <?php echo $template['footer_middle_html']; ?>
                 <?php else: ?>
-                    <?php echo $template && !empty($template['footer_text']) ? htmlspecialchars($template['footer_text']) : 'نظام GIS Manager لإدارة وتوثيق المعاينات الميدانية جغرافياً.'; ?>
+                    <?php echo $template && !empty($template['footer_text']) ? htmlspecialchars((string)$template['footer_text']) : 'نظام GIS Manager لإدارة وتوثيق المعاينات الميدانية جغرافياً.'; ?>
                 <?php endif; ?>
             </div>
             
