@@ -1,6 +1,9 @@
 <?php
 // index.php - الموجه المركزي الجغرافي المطور (النسخة النهائية الفائقة الأمان والاتزان لبيئات PHP 8.4)
 
+// تفعيل التخزين المؤقت للمخرجات لضمان تشغيل إعادة التوجيه الفورية الآمنة (safeRedirect) ومنع تداخل الكاش والتنسيقات
+ob_start();
+
 // 1. استدعاء ملف النواة والإعدادات وقاعدة البيانات في مطلع الملف لضمان تشغيل الجلسة بأعلى معايير الأمان المكتوبة بـ config.php
 require_once 'db.php';
 
@@ -18,7 +21,6 @@ if (!isset($_SESSION['user_id'])) {
 // 4. استخراج وتعريف متغيرات الجلسة والصلاحيات الأساسية مبكراً لتكون متاحة لجميع الصفحات المضمنة
 $role = isset($_SESSION['role']) ? $_SESSION['role'] : 'user';
 $allowed_types = !empty($_SESSION['allowed_types']) ? $_SESSION['allowed_types'] : '0';
-$user_allowed_pages = !empty($_SESSION['allowed_pages']) ? explode(',', (string)$_SESSION['allowed_pages']) : [];
 
 // ----------------- [حلول الاستيراد والتصدير والنسخ والرقابة - الاعتراض قبل الـ HTML] -----------------
 
@@ -34,15 +36,107 @@ if (isset($_GET['action']) && $_GET['action'] === 'export_kml') {
     exit;
 }
 
-// جـ. اعتراض طلب تحميل قالب الاستيراد المخصص (XLS) للقسم المحدد فوراً وقبل الـ HTML
+// جـ. اعتراض طلب تحميل قالب الاستيراد المخصص (XLS) للقسم المحدد وتوليد ملف الإكسل آلياً وتنزيله فوراً باللغة العربية
 if (isset($_GET['action']) && $_GET['action'] === 'download_import_template') {
-    include 'pages/import-view.php';
+    $type_id = intval($_GET['type_id'] ?? 0);
+    if ($type_id > 0) {
+        // جلب المسميات العربية للحقول النشطة المخصصة لهذا القسم من قاعدة البيانات
+        $stmt = $pdo->prepare("SELECT label, type, options FROM fields WHERE FIND_IN_SET(?, record_type_id) AND is_active = 1 ORDER BY field_order ASC");
+        $stmt->execute([$type_id]);
+        $fields = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // تأسيس أعمدة الرأس الافتراضية باللغة العربية الفصحى
+        $headers = ['خط العرض (Latitude)', 'خط الطول (Longitude)'];
+        $validations = [];
+
+        // دالة مساعدة لتحويل ترتيب الأعمدة الرقمي إلى حروف أبجدية متوافقة مع نطاقات إكسل (A, B, C...)
+        if (!function_exists('numToLetter')) {
+            function numToLetter($num) {
+                $numeric = ($num - 1) % 26;
+                $letter = chr(65 + $numeric);
+                $num2 = intval(($num - 1) / 26);
+                if ($num2 > 0) {
+                    return numToLetter($num2) . $letter;
+                } else {
+                    return $letter;
+                }
+            }
+        }
+
+        // إعداد نطاق التحقق لكل عمود ابتداءً من العمود الثالث C (حيث أن A لخط العرض وB لخط الطول)
+        $col_num = 3;
+        foreach ($fields as $f) {
+            $headers[] = $f['label']; // إدراج المسمى العربي الصريح في رأس العمود
+            $col_letter = numToLetter($col_num);
+
+            if ($f['type'] === 'select' && !empty($f['options'])) {
+                // مواءمة الفواصل لتتناسب مع بيئة إكسل في الشرق الأوسط (استخدام الفاصلة المنقوطة)
+                $formatted_options = str_replace(',', ';', $f['options']);
+                $validations[] = [
+                    'range' => "{$col_letter}2:{$col_letter}1000",
+                    'list'  => $formatted_options
+                ];
+            } elseif ($f['type'] === 'checkbox') {
+                $validations[] = [
+                    'range' => "{$col_letter}2:{$col_letter}1000",
+                    'list'  => 'نعم;لا'
+                ];
+            }
+            $col_num++;
+        }
+
+        // إرسال ترويسات قوية تجبر المتصفح على تحميل الملف فوراً كملف خارجي وتجنب فتحه داخل المتصفح كـ HTML
+        header("Content-Type: application/octet-stream"); 
+        header("Content-Disposition: attachment; filename=import_template_section_{$type_id}.xls");
+        header("Pragma: no-cache");
+        header("Expires: 0");
+
+        // بناء مستند XLS المتوافق برمجياً وتمرير مصفوفة المطابقة والـ Data Validation
+        echo '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">';
+        echo '<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8">';
+        echo '<!--[if gte mso 9]><xml>';
+        echo ' <x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet>';
+        echo '  <x:Name>Template</x:Name>';
+        echo '  <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>';
+        echo ' </x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook>';
+        
+        // حقن تاجات التحقق والقوائم المنسدلة التفاعلية لكل حقل مخصص
+        if (!empty($validations)) {
+            foreach ($validations as $val) {
+                echo ' <x:DataValidation>';
+                echo '  <x:Range>' . $val['range'] . '</x:Range>';
+                echo '  <x:Type>List</x:Type>';
+                echo '  <x:Value>&quot;' . htmlspecialchars($val['list'], ENT_QUOTES, 'UTF-8') . '&quot;</x:Value>';
+                echo ' </x:DataValidation>';
+            }
+        }
+        
+        echo '</xml><![endif]-->';
+        echo '<style>th { background-color: #1e293b; color: white; font-weight: bold; height: 35px; text-align: center; font-family: Cairo, Arial, sans-serif; } td { height: 25px; text-align: right; }</style>';
+        echo '</head><body dir="rtl"><table border="1"><tr>';
+        
+        // طباعة العناوين العربية الصريحة
+        foreach ($headers as $h) {
+            echo "<th>" . htmlspecialchars($h) . "</th>";
+        }
+        echo '</tr><tr>';
+        
+        // طباعة صف فارغ أسفل العناوين لتسهيل الكتابة
+        foreach ($headers as $h) {
+            echo "<td></td>";
+        }
+        echo '</tr></table></body></html>';
+    }
     exit;
 }
 
-// د. اعتراض زر إلغاء الاستيراد فورياً قبل طباعة الهيدر والـ HTML لمنع خطأ الـ Headers Sent
+// د. اعتراض زر إلغاء الاستيراد فورياً لتنظيف جلسة الرفع وحذف الملف المؤقت ثم إعادة التوجيه الآمن
 if (isset($_GET['cancel_import']) && $_GET['cancel_import'] == 1) {
-    include 'pages/import-view.php';
+    if (isset($_SESSION['import_temp_json']) && file_exists($_SESSION['import_temp_json'])) {
+        @unlink($_SESSION['import_temp_json']);
+    }
+    unset($_SESSION['import_temp_json']);
+    header("Location: index.php?page=import-view");
     exit;
 }
 
@@ -79,32 +173,34 @@ if (!in_array($page, $allowed_pages)) {
     $page = 'home-view'; 
 }
 
-// 6. حماية إضافية (RBAC) لصفحات الإدارة والأمان بناءً على رتبة المستخدم
+// 6. [حماية إضافية متطورة وديناميكية بالـ RBAC]: فحص صلاحية الدخول للموديول بالاعتماد على دالة التحقق تفصيلياً (hasPermission)
 $protected_modules = ['add-record', 'map-view', 'records-manage', 'dashboard-view', 'reports-view', 'import-view', 'export-view', 'transfers-view'];
 
-if ($role !== 'admin') {
-    if (in_array($page, $protected_modules) && !in_array($page, $user_allowed_pages)) {
-        if (count($user_allowed_pages) > 0) {
-            header("Location: index.php?page=home-view");
-        } else {
-            header("Location: logout.php");
-        }
+if (in_array($page, $protected_modules)) {
+    // التحقق الفوري ما إذا كان الحساب يملك إذن القراءة والعرض (read) لهذا الموديول تحديداً
+    if (!hasPermission($page, 'read')) {
+        header("Location: index.php?page=home-view");
         exit;
     }
 }
 
-// قصر صفحات التحكم الفنية والسرية والنسخ الاحتياطي وإصلاح البيانات على الأدمن فقط
-$admin_only_pages = ['settings-view', 'users-view', 'print-settings', 'backup-view', 'import-view', 'export-view', 'audit-logs', 'data-repair'];
-if (in_array($page, $admin_only_pages) && $role !== 'admin') { 
-    $page = 'home-view'; 
-}
-
-// 7. [الاعتراض العام الذكي لجميع طلبات POST] - يستدعي معالجة العمليات ويقطع التنفيذ فوراً لتجنب تشوه الواجهة
+// 7. [آلية الاعتراض الهجين المطور لطلبات الـ POST قبل الـ HTML]
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (in_array($page, $allowed_pages)) {
+        ob_start(); // فتح بفر مؤقت لالتقاط وحماية مخرجات الملف البرمجي
         include "pages/{$page}.php";
-        exit; 
+        
+        // إذا نجحت المعالجة وتم التوجيه؛ فسيقوم الملف بعمل exit داخلي آمن.
+        // وإذا فشل التحقق (وجود أخطاء بالاستمارة)، نقوم بتطهير البفر المؤقت لمنع تكرار الواجهة
+        // ونسمح للموجه بمتابعة تشغيله المعتاد وتحميل القوالب والتنسيقات والـ CSS لتعرض الأخطاء منسقة
+        ob_end_clean(); 
     }
+}
+
+// قصر صفحات التحكم الفنية والسرية والنسخ الاحتياطي وإصلاح البيانات على الأدمن فقط (إصلاح وتطهير موديولي الاستيراد والتصدير لربطهما بالنظام الديناميكي)
+$admin_only_pages = ['settings-view', 'users-view', 'print-settings', 'backup-view', 'audit-logs', 'data-repair'];
+if (in_array($page, $admin_only_pages) && $role !== 'admin') { 
+    $page = 'home-view'; 
 }
 
 // ----------------- [جلب إحصائيات الإشعارات المركزية للشريط العلوي] -----------------

@@ -7,9 +7,6 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 $message = '';
 $error = '';
 
-// قراءة رقم الصفحة الحالية الخاص بجدول الحقول (الافتراضي: الصفحة 1)
-$f_page = isset($_GET['f_page']) ? max(1, intval($_GET['f_page'])) : 1;
-
 // قراءة رسائل الجلسة الأمنية
 if (isset($_SESSION['users_success_msg'])) { $message = $_SESSION['users_success_msg']; unset($_SESSION['users_success_msg']); }
 if (isset($_SESSION['users_error_msg'])) { $error = $_SESSION['users_error_msg']; unset($_SESSION['users_error_msg']); }
@@ -17,16 +14,18 @@ if (isset($_SESSION['users_error_msg'])) { $error = $_SESSION['users_error_msg']
 /**
  * دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers في بيئة PHP 8.4
  */
-function safeRedirect($url) {
-    while (ob_get_level()) {
-        ob_end_clean();
+if (!function_exists('safeRedirect')) {
+    function safeRedirect($url) {
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        if (!headers_sent()) {
+            header("Location: " . $url);
+        } else {
+            echo "<script>window.location.href='" . $url . "';</script>";
+        }
+        exit;
     }
-    if (!headers_sent()) {
-        header("Location: " . $url);
-    } else {
-        echo "<script>window.location.href='" . $url . "';</script>";
-    }
-    exit;
 }
 
 // معالجة كافة طلبات POST (الحفظ والحذف والاعتماد والحل) تحت حماية CSRF المزدوجة
@@ -37,7 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die("خطأ أمني: انتهت صلاحية الجلسة الآمنة، يرجى تحديث الصفحة والمحاولة مجدداً (CSRF Validation Failed).");
     }
 
-    // 1. إضافة أو تعديل مستخدم وتوثيق تصاريح أقسامه وصفحاته
+    // 1. إضافة أو تعديل مستخدم وتوثيق تصاريح أقسامه وصلاحياته الديناميكية المفتوحة
     if (isset($_POST['action']) && $_POST['action'] === 'save_user') {
         $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
         $username = trim((string)($_POST['username'] ?? ''));
@@ -48,8 +47,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $allowed_types_arr = isset($_POST['allowed_types_ids']) ? (array)$_POST['allowed_types_ids'] : [];
         $allowed_types_str = implode(',', array_map('intval', $allowed_types_arr));
 
-        $allowed_pages_arr = isset($_POST['allowed_pages_slugs']) ? (array)$_POST['allowed_pages_slugs'] : [];
-        $allowed_pages_str = implode(',', array_map('serialize_clean_slugs', $allowed_pages_arr));
+        // معالجة وحزم مصفوفة الصلاحيات الثلاثية المحددة وحفظها كـ JSON في قاعدة البيانات لضمان المرونة
+        $permissions_arr = isset($_POST['allowed_permissions']) ? (array)$_POST['allowed_permissions'] : [];
+        $allowed_pages_json = json_encode($permissions_arr, JSON_UNESCAPED_UNICODE);
 
         if (!empty($username) && !empty($email)) {
             try {
@@ -60,10 +60,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (!empty($password)) {
                             $hashed_password = password_hash($password, PASSWORD_BCRYPT);
                             $stmtUp = $pdo->prepare("UPDATE users SET username = ?, email = ?, password = ?, role = ?, allowed_types = ?, allowed_pages = ? WHERE id = ?");
-                            $stmtUp->execute([$username, $email, $hashed_password, $role, $allowed_types_str, $allowed_pages_str, $user_id]);
+                            $stmtUp->execute([$username, $email, $hashed_password, $role, $allowed_types_str, $allowed_pages_json, $user_id]);
                         } else {
                             $stmtUp = $pdo->prepare("UPDATE users SET username = ?, email = ?, role = ?, allowed_types = ?, allowed_pages = ? WHERE id = ?");
-                            $stmtUp->execute([$username, $email, $role, $allowed_types_str, $allowed_pages_str, $user_id]);
+                            $stmtUp->execute([$username, $email, $role, $allowed_types_str, $allowed_pages_json, $user_id]);
                         }
                         
                         // فك وحل أي طلب استرجاع معلق لهذا الموظف
@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (!empty($password)) {
                         $hashed_password = password_hash($password, PASSWORD_BCRYPT);
                         $stmtIns = $pdo->prepare("INSERT INTO users (username, email, password, role, allowed_types, allowed_pages) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmtIns->execute([$username, $email, $hashed_password, $role, $allowed_types_str, $allowed_pages_str]);
+                        $stmtIns->execute([$username, $email, $hashed_password, $role, $allowed_types_str, $allowed_pages_json]);
                         
                         logActivity($pdo, "إنشاء حساب موظف", "قام المشرف بإنشاء وتفعيل حساب موظف جديد باسم: " . $username);
                         $_SESSION['users_success_msg'] = "تم إنشاء وتفعيل حساب الموظف وتحديد صلاحياته بنجاح.";
@@ -124,19 +124,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-function serialize_clean_slugs($slug) {
-    return preg_replace('/[^a-zA-Z0-9_-]/', '', $slug);
-}
-
-// جلب البيانات الأساسية
+// جلب البيانات الأساسية للجدول
 $users = $pdo->query("SELECT id, username, email, role, allowed_types, allowed_pages, created_at FROM users ORDER BY id DESC")->fetchAll();
 $record_types = $pdo->query("SELECT id, label FROM record_types ORDER BY id DESC")->fetchAll();
 
 // جلب طلبات الاسترجاع المعلقة
 $pending_requests = $pdo->query("SELECT * FROM password_requests WHERE status = 'pending' ORDER BY id DESC")->fetchAll();
 
-// مصفوفة الموديولات والصفحات المفتوحة للتصاريح والـ RBAC
-$system_modules_list = [
+// مصفوفة الموديولات والصفحات الاحتياطية (تستعمل كمنقذ فقط في حال عدم توفر متغير $titles من الموجه الرئيسي)
+$fallback_modules_list = [
     'add-record'     => 'إضافة سجل جديد',
     'map-view'       => 'الخريطة التفاعلية والحدود',
     'records-manage' => 'إدارة السجلات الميدانية',
@@ -144,6 +140,7 @@ $system_modules_list = [
     'reports-view'   => 'منشئ ومستخرج التقارير التفصيلية',
     'transfers-view' => 'إدارة الصادر والوارد والحركة المستندية'
 ];
+$active_system_modules = isset($titles) ? $titles : $fallback_modules_list;
 ?>
 
 <!-- التنبيهات بـ SweetAlert -->
@@ -248,16 +245,36 @@ $system_modules_list = [
                     </div>
                 </div>
 
-                <!-- موديولات القائمة المصرح بها -->
-                <div>
-                    <label class="block text-gray-600 text-[11px] font-bold mb-1.5"><i class="fa-solid fa-table-list text-purple-600"></i> تحديد الموديولات الجانبية المتاحة:</label>
-                    <div class="space-y-2 bg-gray-50 p-3 rounded-xl border border-gray-100 max-h-32 overflow-y-auto">
-                        <?php foreach ($system_modules_list as $slug => $label): ?>
-                            <label class="flex items-center space-x-2 space-x-reverse cursor-pointer select-none text-[11px] text-gray-700">
-                                <input type="checkbox" name="allowed_pages_slugs[]" value="<?php echo $slug; ?>" class="user-allowed-pages-cb w-4 h-4 text-purple-600 border-gray-300 rounded cursor-pointer">
-                                <span><?php echo htmlspecialchars($label); ?></span>
-                            </label>
-                        <?php endforeach; ?>
+                <!-- شبكة الصلاحيات الديناميكية التفصيلية الثلاثية (العرض - الحفظ والتعديل - الحذف) لجميع موديولات النظام -->
+                <div class="space-y-2">
+                    <label class="block text-gray-600 text-[11px] font-bold mb-1.5"><i class="fa-solid fa-shield-halved text-purple-600 ml-1"></i> صلاحيات وموديولات النظام المسموحة تفصيلياً:</label>
+                    <div class="overflow-x-auto rounded-xl border border-gray-200 shadow-inner bg-gray-50/50 p-2 max-h-64 overflow-y-auto">
+                        <table class="min-w-full divide-y divide-gray-200 text-right text-[10px] bg-white rounded-lg" dir="rtl">
+                            <thead class="bg-purple-100 text-purple-800 font-bold sticky top-0 z-10">
+                                <tr>
+                                    <th class="px-2 py-1.5">الموديول</th>
+                                    <th class="px-2 py-1.5 text-center">عرض (قراءة)</th>
+                                    <th class="px-2 py-1.5 text-center">حفظ (تعديل)</th>
+                                    <th class="px-2 py-1.5 text-center">حذف إداري</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 text-gray-750 font-bold">
+                                <?php foreach ($active_system_modules as $slug => $label): ?>
+                                    <tr class="hover:bg-slate-50/50 transition">
+                                        <td class="px-2 py-1.5 font-bold text-slate-800 truncate max-w-[120px]" title="<?php echo htmlspecialchars($label); ?>"><?php echo htmlspecialchars($label); ?></td>
+                                        <td class="px-2 py-1.5 text-center">
+                                            <input type="checkbox" name="allowed_permissions[<?php echo $slug; ?>][read]" value="1" data-module="<?php echo $slug; ?>" data-action="read" class="user-permission-cb w-4 h-4 text-emerald-600 border-gray-300 rounded cursor-pointer">
+                                        </td>
+                                        <td class="px-2 py-1.5 text-center">
+                                            <input type="checkbox" name="allowed_permissions[<?php echo $slug; ?>][write]" value="1" data-module="<?php echo $slug; ?>" data-action="write" class="user-permission-cb w-4 h-4 text-orange-600 border-gray-300 rounded cursor-pointer">
+                                        </td>
+                                        <td class="px-2 py-1.5 text-center">
+                                            <input type="checkbox" name="allowed_permissions[<?php echo $slug; ?>][delete]" value="1" data-module="<?php echo $slug; ?>" data-action="delete" class="user-permission-cb w-4 h-4 text-red-600 border-gray-300 rounded cursor-pointer">
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -286,7 +303,7 @@ $system_modules_list = [
                             <th class="px-4 py-3 text-center">الإجراءات</th>
                         </tr>
                     </thead>
-                    <tbody class="bg-white divide-y divide-gray-100 text-gray-600 font-semibold">
+                    <tbody class="bg-white divide-y divide-gray-200 text-gray-600 font-semibold">
                         <?php foreach ($users as $user): 
                             $allowed_ids = explode(',', $user['allowed_types'] ?? '');
                             $allowed_labels = [];
@@ -295,12 +312,33 @@ $system_modules_list = [
                             }
                             $allowed_str = count($allowed_labels) > 0 ? implode(' + ', $allowed_labels) : 'غير مصرح بأي قسم';
 
-                            $allowed_pages_slugs = explode(',', $user['allowed_pages'] ?? '');
+                            // فك الصلاحيات المنسقة بالـ JSON وعرضها مفصّلة للمشرف
+                            $allowed_pages_raw = $user['allowed_pages'] ?? '';
                             $allowed_pages_labels = [];
-                            foreach ($system_modules_list as $slug => $label) {
-                                if (in_array($slug, $allowed_pages_slugs)) { $allowed_pages_labels[] = $label; }
+                            $perms_decoded = json_decode($allowed_pages_raw, true);
+
+                            if (is_array($perms_decoded)) {
+                                foreach ($perms_decoded as $slug => $actions) {
+                                    $actions_str = [];
+                                    if (!empty($actions['read'])) $actions_str[] = 'عرض';
+                                    if (!empty($actions['write'])) $actions_str[] = 'تعديل';
+                                    if (!empty($actions['delete'])) $actions_str[] = 'حذف';
+                                    
+                                    if (count($actions_str) > 0) {
+                                        $module_name = isset($active_system_modules[$slug]) ? $active_system_modules[$slug] : $slug;
+                                        $allowed_pages_labels[] = htmlspecialchars($module_name) . " (" . implode('/', $actions_str) . ")";
+                                    }
+                                }
+                            } else {
+                                // التوافق الارتجاعي لحسابات الصلاحيات القديمة
+                                $allowed_pages_slugs = explode(',', $allowed_pages_raw);
+                                foreach ($active_system_modules as $slug => $label) {
+                                    if (in_array($slug, $allowed_pages_slugs)) {
+                                        $allowed_pages_labels[] = htmlspecialchars($label) . " (عرض/تعديل)";
+                                    }
+                                }
                             }
-                            $allowed_pages_str = count($allowed_pages_labels) > 0 ? implode(' + ', $allowed_pages_labels) : 'غير مصرح بموديول';
+                            $allowed_pages_str = count($allowed_pages_labels) > 0 ? implode(' | ', $allowed_pages_labels) : 'غير مصرح بموديول';
                         ?>
                             <tr class="hover:bg-gray-50/50 transition border-b">
                                 <td class="px-4 py-3 font-bold text-slate-800">
@@ -322,7 +360,7 @@ $system_modules_list = [
                                 </td>
                                 <td class="px-4 py-3 space-y-1">
                                     <div class="text-[10px] text-blue-600 font-bold">الأقسام: <?php echo $user['role'] === 'admin' ? 'كل الأقسام' : htmlspecialchars($allowed_str); ?></div>
-                                    <div class="text-[10px] text-purple-600 font-bold">الموديولات: <?php echo $user['role'] === 'admin' ? 'كل الصفحات' : htmlspecialchars($allowed_pages_str); ?></div>
+                                    <div class="text-[10px] text-purple-650 font-bold">الموديولات: <?php echo $user['role'] === 'admin' ? 'كل الصفحات والأذونات' : htmlspecialchars($allowed_pages_str); ?></div>
                                 </td>
                                 <td class="px-4 py-3 text-center space-x-2 space-x-reverse">
                                     <button type="button" onclick="editUser(<?php echo htmlspecialchars(json_encode($user, JSON_UNESCAPED_UNICODE)); ?>)" class="text-blue-500 hover:text-blue-750 font-bold"><i class="fa-solid fa-pen-to-square"></i> تعديل</button>
@@ -369,15 +407,33 @@ $system_modules_list = [
             });
         }
 
-        const cbPages = document.querySelectorAll('.user-allowed-pages-cb');
-        cbPages.forEach(cb => cb.checked = false);
+        // تصفير وتفعيل التوقيعات والصلاحيات الثلاثية للـ JSON والنسخ القديمة (Backward Compatibility)
+        const cbPerms = document.querySelectorAll('.user-permission-cb');
+        cbPerms.forEach(cb => cb.checked = false);
 
         if (user.allowed_pages) {
-            const allowedPages = user.allowed_pages.split(',');
-            allowedPages.forEach(p => {
-                const cb = document.querySelector(`.user-allowed-pages-cb[value="${p}"]`);
-                if (cb) cb.checked = true;
-            });
+            try {
+                // محاولة القراءة وفك الـ JSON التفصيلي الجديد
+                const perms = JSON.parse(user.allowed_pages);
+                for (const [module, actions] of Object.entries(perms)) {
+                    for (const [action, value] of Object.entries(actions)) {
+                        if (value == 1) {
+                            const cb = document.querySelector(`.user-permission-cb[data-module="${module}"][data-action="${action}"]`);
+                            if (cb) cb.checked = true;
+                        }
+                    }
+                }
+            } catch (e) {
+                // التراجع الآمن وتفسير الصلاحيات القديمة (كومة نصوص مفصولة بفاصلة) وتفعيل القراءة والكتابة لها تلقائياً
+                const oldSlugs = user.allowed_pages.split(',');
+                oldSlugs.forEach(slug => {
+                    const cbRead = document.querySelector(`.user-permission-cb[data-module="${slug}"][data-action="read"]`);
+                    if (cbRead) cbRead.checked = true;
+                    
+                    const cbWrite = document.querySelector(`.user-permission-cb[data-module="${slug}"][data-action="write"]`);
+                    if (cbWrite) cbWrite.checked = true;
+                });
+            }
         }
 
         document.getElementById('cancel-user-btn').classList.remove('hidden');

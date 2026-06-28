@@ -91,3 +91,34 @@ function validateCsrfToken($token) {
     }
     return hash_equals($_SESSION['csrf_token'], $token);
 }
+
+/**
+ * 4. دالة التحقق المركزي والرقابي المتقدم من صلاحيات وامتيازات الموظف الفردية (hasPermission)
+ * تتحقق ديناميكياً من صلاحيات (العرض، التعديل، الحذف) لكل موديول على حدة وتدعم التوافقية لجميع الرتب وPHP 8.4
+ */
+function hasPermission($module, $action) {
+    // أ. مدير النظام (Admin) يملك كامل الصلاحيات تلقائياً دون فحص أمنياً
+    if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin') {
+        return true;
+    }
+    
+    // ب. جلب مصفوفة الصلاحيات المنسقة بالـ JSON من الجلسة الآمنة للموظف
+    $permissions_raw = $_SESSION['allowed_pages'] ?? '{}';
+    $permissions = json_decode($permissions_raw, true);
+    
+    // جـ. إذا كانت الصلاحيات مخزنة بالصيغة التفصيلية الهجينة الجديدة (مصفوفة JSON)
+    if (is_array($permissions)) {
+        return isset($permissions[$module][$action]) && $permissions[$module][$action] == 1;
+    }
+    
+    // د. التوافق الارتجاعي مع الحسابات القديمة المسجلة بصيغة نصية مفصولة بفاصلة
+    // نمنحها صلاحيات العرض والتعديل تلقائياً للموديولات المسموحة مسبقاً، ونحجب الحذف الإداري لعدم تعارض العمل الميداني
+    if (!empty($permissions_raw) && is_string($permissions_raw)) {
+        $old_slugs = explode(',', $permissions_raw);
+        if (in_array($module, $old_slugs)) {
+            return ($action === 'read' || $action === 'write');
+        }
+    }
+    
+    return false;
+}
