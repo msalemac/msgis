@@ -1,7 +1,12 @@
 <?php
 // pages/print-settings.php - لوحة التحكم بقوالب الطباعة (النسخة النهائية الفائقة المؤازرة لبيئات PHP 8.4)
-if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
+if (!isset($_SESSION['user_id'])) {
     die("غير مسموح بالوصول المباشر.");
+}
+
+$role = isset($role) ? $role : ($_SESSION['role'] ?? 'user');
+if ($role !== 'admin') {
+    die("عذراً، ليس لديك صلاحية الوصول إلى موديول إعدادات الطباعة.");
 }
 
 $message = '';
@@ -21,17 +26,19 @@ if (isset($_SESSION['print_error_msg'])) {
  * دالة إعادة التوجيه الفائقة والمقاومة لقيود البفر والـ Headers
  * تقوم بتفريغ أي بفر معلق وتجبر المتصفح على التوجيه الفوري
  */
-function safeRedirect($url) {
-    while (ob_get_level()) {
-        ob_end_clean();
+if (!function_exists('safeRedirect')) {
+    function safeRedirect($url) {
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        if (!headers_sent()) {
+            header("Location: " . $url);
+        } else {
+            echo "<script>window.location.href='" . $url . "';</script>";
+            echo "<noscript><meta http-equiv='refresh' content='0;url=" . $url . "'></noscript>";
+        }
+        exit;
     }
-    if (!headers_sent()) {
-        header("Location: " . $url);
-    } else {
-        echo "<script>window.location.href='" . $url . "';</script>";
-        echo "<noscript><meta http-equiv='refresh' content='0;url=" . $url . "'></noscript>";
-    }
-    exit;
 }
 
 // معالجة كافة طلبات POST (الحفظ والحذف الآمن) في مطلع الملف لقطع التنفيذ فوراً
@@ -53,7 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         safeRedirect("index.php?page=print-settings");
     }
 
-    // 2. معالجة طلب حفظ القالب وتحديثه
+    // 2. معالجة طلب حفظ القالب وتحديثه (يستقبل قيم الـ POST مفكوكة تلقائياً من المفسر العام بـ db.php)
     if (isset($_POST['action']) && $_POST['action'] === 'save_print_template') {
         $template_id = intval($_POST['template_id'] ?? 0);
         $template_name = trim($_POST['template_name'] ?? '');
@@ -78,24 +85,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $header_layout_json = trim($_POST['header_layout_json'] ?? '{"right":30,"middle":40,"left":30}');
         $footer_layout_json = trim($_POST['footer_layout_json'] ?? '{"right":30,"middle":40,"left":30}');
 
-        // فك تشفير حقول الـ HTML من الحزم المرمزة بـ Base64 لتفادي حظر الـ WAF على السيرفر
-        $header_right_html  = isset($_POST['header_right_html_encoded'])  ? trim((string)base64_decode($_POST['header_right_html_encoded']))  : '';
-        $header_middle_html = isset($_POST['header_middle_html_encoded']) ? trim((string)base64_decode($_POST['header_middle_html_encoded'])) : '';
-        $header_left_html   = isset($_POST['header_left_html_encoded'])   ? trim((string)base64_decode($_POST['header_left_html_encoded']))   : '';
+        // قراءة قيم الـ HTML المتقدمة المفكوكة تلقائياً بمستقبل الأمان الموحد في db.php
+        $header_right_html  = trim((string)($_POST['header_right_html'] ?? ''));
+        $header_middle_html = trim((string)($_POST['header_middle_html'] ?? ''));
+        $header_left_html   = trim((string)($_POST['header_left_html'] ?? ''));
         
-        $footer_right_html  = isset($_POST['footer_right_html_encoded'])  ? trim((string)base64_decode($_POST['footer_right_html_encoded']))  : '';
-        $footer_middle_html = isset($_POST['footer_middle_html_encoded']) ? trim((string)base64_decode($_POST['footer_middle_html_encoded'])) : '';
-        $footer_left_html   = isset($_POST['footer_left_html_encoded'])   ? trim((string)base64_decode($_POST['footer_left_html_encoded']))   : '';
+        $footer_right_html  = trim((string)($_POST['footer_right_html'] ?? ''));
+        $footer_middle_html = trim((string)($_POST['footer_middle_html'] ?? ''));
+        $footer_left_html   = trim((string)($_POST['footer_left_html'] ?? ''));
         
-        $extra_content_above = isset($_POST['extra_content_above_encoded']) ? trim((string)base64_decode($_POST['extra_content_above_encoded'])) : '';
-        $extra_content_below = isset($_POST['extra_content_below_encoded']) ? trim((string)base64_decode($_POST['extra_content_below_encoded'])) : '';
+        $extra_content_above = trim((string)($_POST['extra_content_above'] ?? ''));
+        $extra_content_below = trim((string)($_POST['extra_content_below'] ?? ''));
 
-        // فك تشفير هياكل الجداول وتوقيعات اللجنة المشكلة
-        $columns_config_json = isset($_POST['columns_config_encoded']) ? base64_decode($_POST['columns_config_encoded']) : '[]';
-        $custom_css          = isset($_POST['custom_css_encoded'])          ? base64_decode($_POST['custom_css_encoded'])          : '';
-        $signatures_json     = isset($_POST['signatures_json_encoded'])     ? base64_decode($_POST['signatures_json_encoded'])     : '[]';
+        // قراءة مصفوفات الهياكل والتوقيعات المفكوكة تلقائياً
+        $columns_config_json = trim((string)($_POST['columns_config'] ?? '[]'));
+        $custom_css          = trim((string)($_POST['custom_css'] ?? ''));
+        $signatures_json     = trim((string)($_POST['signatures_json'] ?? '[]'));
         
-        $groups_config_json  = isset($_POST['groups_config_json'])          ? $_POST['groups_config_json']                         : '{}';
+        $groups_config_json  = isset($_POST['groups_config_json']) ? $_POST['groups_config_json'] : '{}';
 
         if (!empty($template_name) && !empty($main_title)) {
             try {
@@ -172,7 +179,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 header_right_html, header_middle_html, header_left_html,
                                 footer_right_html, footer_middle_html, footer_left_html,
                                 extra_content_above, extra_content_below, columns_config, signatures_json
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 24, ?, ?, 8, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                            ) VALUES (
+                                ?, ?, ?, ?, ?, ?, ?, ?, 24, ?, ?, 8, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?, ?, ?, ?, ?, ?, ?
+                            )";
+                    
                     $pdo->prepare($sql)->execute([
                         $template_name, $main_title, $signatures_title, isset($_POST['show_logo']) ? 1 : 0,
                         $paper_size, $orientation, $header_font, $header_height,
@@ -386,30 +398,35 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                     </div>
                     <div>
                         <label class="block text-gray-600 text-xs font-bold mb-1">العنوان الرئيسي المكتوب في المنتصف:</label>
-                        <input type="text" name="main_title" id="main_title" required class="w-full px-4 py-2 border rounded-lg text-xs bg-white font-bold">
-                    </div>
-                    <div>
-                        <label class="block text-gray-600 text-xs font-bold mb-1">محتوى العمود الأوسط المتقدم (HTML):</label>
-                        <textarea id="header_middle_html" rows="2" class="w-full px-4 py-1.5 border rounded-lg font-mono text-xs bg-slate-50 text-gray-700" dir="ltr"></textarea>
+                        <input type="text" name="main_title" id="main_title" placeholder="محضر معاينة ميدانية" class="w-full px-4 py-2 border rounded-lg text-xs bg-white font-semibold">
                     </div>
                 </div>
+
                 <div class="space-y-4">
-                    <div class="bg-gray-50/50 p-6 rounded-2xl border space-y-4">
-                        <label class="block text-gray-600 text-xs font-bold mb-1">الشعار الرسمي (يسار):</label>
-                        <input type="file" name="logo_file" accept="image/*" class="w-full text-xs text-gray-500 cursor-pointer">
-                        <div id="logo-preview-container" class="hidden flex items-center justify-between border-t pt-3 mt-3">
+                    <div class="space-y-2">
+                        <span class="text-xs text-gray-500 block font-bold">الصورة الميدانية وشعار الترويسة</span>
+                        <div class="flex items-center space-x-4 space-x-reverse bg-gray-50 p-4 rounded-xl border border-gray-200">
+                            <input type="file" name="logo_file" id="logo_file" accept="image/*" class="hidden" onchange="previewLogoFile(event)">
+                            <button type="button" onclick="document.getElementById('logo_file').click()" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-1.5 px-3 rounded-lg text-[10px] transition"><i class="fa-solid fa-cloud-arrow-up"></i> رفع لوجو</button>
+                            <div class="relative w-12 h-12 border bg-white rounded-lg flex items-center justify-center overflow-hidden" id="logo-preview-box">
+                                <i class="fa-regular fa-image text-gray-300 text-lg" id="logo-placeholder"></i>
+                                <img id="logo-preview-img" class="hidden w-full h-full object-contain">
+                            </div>
+                        </div>
+                        
+                        <!-- إضافة خياري الإظهار والحذف لحل مشكلة اختفاء اللوجو عند الحفظ -->
+                        <div class="flex flex-col space-y-2 border-t pt-3 mt-3">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs text-gray-650 font-bold">إظهار الشعار بالورقة:</span>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" name="show_logo" id="show_logo" value="1" checked class="sr-only peer">
+                                    <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+                                </label>
+                            </div>
                             <div class="flex items-center space-x-2 space-x-reverse">
                                 <input type="checkbox" name="remove_logo" id="remove_logo" value="1" class="w-4 h-4 text-red-600 rounded">
-                                <label for="remove_logo" class="text-xs text-red-600 font-bold cursor-pointer">إزالة الشعار الحالي</label>
+                                <label for="remove_logo" class="text-xs text-red-600 font-bold cursor-pointer">حذف الشعار الحالي من القالب</label>
                             </div>
-                            <img id="logo-preview" class="w-12 h-12 object-contain rounded-lg border bg-white shadow">
-                        </div>
-                        <div class="flex items-center justify-between border-t pt-3 mt-3">
-                            <span class="text-xs text-gray-600 font-bold">إظهار الشعار بالورقة:</span>
-                            <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" name="show_logo" id="show_logo" value="1" checked class="sr-only peer">
-                                <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600"></div>
-                            </label>
                         </div>
                     </div>
                     <div>
@@ -425,7 +442,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
             <div class="flex items-center justify-between border-b pb-3 mb-2">
                 <div class="flex items-center space-x-3 space-x-reverse">
                     <div class="p-2 bg-emerald-100 text-emerald-600 rounded-lg"><i class="fa-solid fa-table-cells text-lg"></i></div>
-                    <h3 class="text-sm font-bold text-gray-800">منشئ الجداول والمساحات المرنة المتقدمة</h3>
+                    <h3 class="text-sm font-bold text-gray-800">منشئ الجداول والمساحات مرنة التوزيع في المستند المطبوع</h3>
                 </div>
                 <button type="button" onclick="addCustomTable()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1.5 px-4 rounded-lg text-xs flex items-center space-x-1 space-x-reverse transition">
                     <i class="fa-solid fa-plus text-white"></i>
@@ -442,7 +459,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                 <h3 class="text-sm font-bold text-gray-800">محتويات ونصوص إضافية في مستند الطباعة</h3>
             </div>
             
-            <!-- أداة مساعدة مبتكرة: محرر تنسيق النصوص البصري ومولد أكواد HTML مع حماية التركيز (تم تصحيحها بالكامل) -->
+            <!-- أداة مساعدة مبتكرة: محرر تنسيق النصوص البصري ومولد أكواد HTML مع حماية التركيز -->
             <div class="bg-slate-50/50 p-4 rounded-xl border border-gray-200 mb-2 space-y-3">
                 <div class="flex items-center space-x-2 space-x-reverse border-b pb-2">
                     <i class="fa-solid fa-wand-magic-sparkles text-indigo-600 text-sm"></i>
@@ -453,7 +470,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     <!-- واجهة المحرر التفاعلية البصرية -->
                     <div class="space-y-2">
-                        <!-- شريط أدوات التنسيق المدمج المأمن هندسياً ضد فقدان التحديد (onmousedown) -->
+                        <!-- شريط أدوات التنسيق المدمج المأمن هندسياً ضد فقدان التحديد -->
                         <div class="flex flex-wrap gap-1 bg-white p-2 rounded-lg border border-gray-200">
                             <button type="button" onmousedown="event.preventDefault();" onclick="executeEditorCommand('bold')" class="px-2.5 py-1 text-xs font-black bg-slate-100 hover:bg-slate-200 rounded border transition">B</button>
                             <button type="button" onmousedown="event.preventDefault();" onclick="executeEditorCommand('italic')" class="px-2.5 py-1 text-xs italic bg-slate-100 hover:bg-slate-200 rounded border transition">I</button>
@@ -464,7 +481,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                             <!-- محاذاة النص والاتجاهات -->
                             <button type="button" onmousedown="event.preventDefault();" onclick="executeEditorCommand('justifyRight')" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded border transition" title="محاذاة لليمين"><i class="fa-solid fa-align-right text-[10px]"></i></button>
                             <button type="button" onmousedown="event.preventDefault();" onclick="executeEditorCommand('justifyCenter')" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded border transition" title="توسيط"><i class="fa-solid fa-align-center text-[10px]"></i></button>
-                            <button type="button" onmousedown="event.preventDefault();" onclick="executeEditorCommand('justifyLeft')" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded border transition" title="محاذاة لليسار"><i class="fa-solid fa-align-left text-[10px]"></i></button>
+                            <button type="button" onmousedown="event.preventDefault();" onclick="executeEditorCommand('justifyLeft')" class="px-2 py-1 text-xs bg-slate-100 hover:bg-slate-200 rounded border transition" title="محاذاة ليسار"><i class="fa-solid fa-align-left text-[10px]"></i></button>
 
                             <div class="h-6 w-px bg-gray-200 mx-1"></div>
 
@@ -522,7 +539,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
         </div>
 
         <!-- 3. كروت المجموعات الافتراضية -->
-        <div class="bg-white p-5 rounded-xl border border-gray-100 space-y-4">
+        <div class="bg-white p-5 rounded-xl border border-gray-150 space-y-4">
             <div class="flex items-center space-x-3 space-x-reverse mb-2 border-b pb-3">
                 <div class="p-2 bg-purple-100 text-purple-600 rounded-lg"><i class="fa-solid fa-arrows-up-down-left-right text-lg"></i></div>
                 <h3 class="text-sm font-bold text-gray-800">تنسيق مقاسات وترتيب كروت المجموعات والخرائط (حفظ التموضع بالصفحة)</h3>
@@ -570,7 +587,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                 <div class="flex justify-between items-center border-b pb-2">
                     <div class="flex items-center space-x-2 space-x-reverse">
                         <i class="fa-solid fa-users-viewfinder text-indigo-600 text-xs"></i>
-                        <span class="text-xs font-extrabold text-slate-800">مصمم وجدول أعضاء لجنة المعاينة المشكلة</span>
+                        <span class="text-xs font-extrabold text-slate-800">مجموعة لجنة المعاينة المشتركة</span>
                     </div>
                     <label class="flex items-center space-x-1.5 space-x-reverse text-[10px] font-bold text-slate-600 cursor-pointer">
                         <input type="checkbox" id="show_committee_table" class="w-4 h-4 text-indigo-600 rounded cursor-pointer">
@@ -634,7 +651,7 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                         <label class="block text-gray-600 text-xs font-bold mb-1">محتوى تذييل الصفحة الأيمن (HTML):</label>
-                        <textarea name="footer_right_html" id="footer_right_html" rows="2" class="w-full p-2 border rounded text-xs bg-white font-semibold"></textarea>
+                        <textarea id="footer_right_html" rows="2" class="w-full p-2 border rounded text-xs bg-white font-semibold"></textarea>
                     </div>
                     <div>
                         <label class="block text-gray-600 text-xs font-bold mb-1">النص الأساسي بمنتصف التذييل:</label>
@@ -934,16 +951,54 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
         }
     });
 
+    // دالة معاينة اللوجو المرفوع فورياً
+    function previewLogoFile(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const img = document.getElementById('logo-preview-img');
+            const placeholder = document.getElementById('logo-placeholder');
+            if (img) {
+                img.src = e.target.result;
+                img.classList.remove('hidden');
+            }
+            if (placeholder) {
+                placeholder.classList.add('hidden');
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+
     function loadTemplateData(templateId) {
         const form = document.getElementById('print-settings-form');
         const nameContainer = document.getElementById('template-name-container');
         const templateNameInput = document.getElementById('template_name_input');
         
+        if (!form) return;
         form.reset();
-        document.getElementById('logo-preview-container').classList.add('hidden');
-        document.getElementById('remove_logo').checked = false;
-        document.getElementById('custom_tables_wrapper').innerHTML = '';
-        document.getElementById('committee_rows_wrapper').innerHTML = ''; // تفريغ جدول اللجنة
+
+        // حماية أمنية وتصفير عناصر الرفع والمعاينة والشبكات بأمان (Check if element exists first)
+        const logoContainer = document.getElementById('logo-preview-container');
+        if (logoContainer) logoContainer.classList.add('hidden');
+
+        const removeLogo = document.getElementById('remove_logo');
+        if (removeLogo) removeLogo.checked = false;
+
+        const logoImg = document.getElementById('logo-preview-img');
+        if (logoImg) {
+            logoImg.src = '';
+            logoImg.classList.add('hidden');
+        }
+
+        const logoPlaceholder = document.getElementById('logo-placeholder');
+        if (logoPlaceholder) logoPlaceholder.classList.remove('hidden');
+
+        const customTablesWrapper = document.getElementById('custom_tables_wrapper');
+        if (customTablesWrapper) customTablesWrapper.innerHTML = '';
+
+        const committeeRowsWrapper = document.getElementById('committee_rows_wrapper');
+        if (committeeRowsWrapper) committeeRowsWrapper.innerHTML = '';
 
         document.querySelectorAll('[id^="width_of_"]').forEach(sel => sel.value = "col-span-1");
         document.querySelectorAll('[id^="order_of_"]').forEach(inp => inp.value = "1");
@@ -951,106 +1006,112 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
 
         if (!templateId) {
             form.classList.add('hidden');
-            nameContainer.classList.add('hidden');
+            if (nameContainer) nameContainer.classList.add('hidden');
             return;
         }
 
         form.classList.remove('hidden');
-        nameContainer.classList.remove('hidden');
+        if (nameContainer) nameContainer.classList.remove('hidden');
 
         if (templateId === 'new') {
-            document.getElementById('hidden_template_id').value = "0";
-            templateNameInput.value = "نموذج طباعة جديد";
-            document.getElementById('main_title').value = "محضر معاينة ميدانية";
-            document.getElementById('signatures_title').value = "التوقيعات،،";
-            document.getElementById('paper_size').value = "A4";
-            document.getElementById('orientation').value = "Portrait";
-            document.getElementById('header_font').value = "Cairo";
-            document.getElementById('font_size_pt').value = "10";
-            document.getElementById('header_height').value = "30";
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+            const setChecked = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
+
+            setVal('hidden_template_id', "0");
+            if (templateNameInput) templateNameInput.value = "نموذج طباعة جديد";
+            setVal('main_title', "محضر معاينة ميدانية");
+            setVal('signatures_title', "التوقيعات،،");
+            setVal('paper_size', "A4");
+            setVal('orientation', "Portrait");
+            setVal('header_font', "Cairo");
+            setVal('font_size_pt', "10");
+            setVal('header_height', "30");
             
-            document.getElementById('margin_top_mm').value = "8";
-            document.getElementById('margin_bottom_mm').value = "8";
-            document.getElementById('margin_right_mm').value = "8";
-            document.getElementById('margin_left_mm').value = "8";
-            document.getElementById('margin_header_bottom_px').value = "12";
-            document.getElementById('margin_footer_top_px').value = "12";
+            setVal('margin_top_mm', "8");
+            setVal('margin_bottom_mm', "8");
+            setVal('margin_right_mm', "8");
+            setVal('margin_left_mm', "8");
+            setVal('margin_header_bottom_px', "12");
+            setVal('margin_footer_top_px', "12");
             
-            document.getElementById('grid_gap_px').value = "12";
-            document.getElementById('card_padding_px').value = "12";
+            setVal('grid_gap_px', "12");
+            setVal('card_padding_px', "12");
             
-            document.getElementById('header_ratio_right').value = "30";
-            document.getElementById('header_ratio_middle').value = "40";
-            document.getElementById('header_ratio_left').value = "30";
-            document.getElementById('footer_ratio_right').value = "30";
-            document.getElementById('footer_ratio_middle').value = "40";
-            document.getElementById('footer_ratio_left').value = "30";
+            setVal('header_ratio_right', "30");
+            setVal('header_ratio_middle', "40");
+            setVal('header_ratio_left', "30");
+            setVal('footer_ratio_right', "30");
+            setVal('footer_ratio_middle', "40");
+            setVal('footer_ratio_left', "30");
             
-            document.getElementById('show_committee_table').checked = false;
-            document.getElementById('committee_table_title').value = "أعضاء اللجنة المشكلة للمعاينة";
+            setChecked('show_committee_table', false);
+            setVal('committee_table_title', "أعضاء اللجنة المشكلة للمعاينة");
             addCommitteeRow(); // صف افتراضي فارغ للجنة
         } else {
             const currentTmpl = templatesList.find(t => t.id == templateId);
             if (currentTmpl) {
-                document.getElementById('hidden_template_id').value = currentTmpl.id;
-                templateNameInput.value = currentTmpl.template_name;
-                document.getElementById('header_right_1').value = currentTmpl.header_right_1 || '';
-                document.getElementById('header_right_2').value = currentTmpl.header_right_2 || '';
-                document.getElementById('header_right_3').value = currentTmpl.header_right_3 || '';
-                document.getElementById('main_title').value = currentTmpl.main_title || '';
-                document.getElementById('signatures_title').value = currentTmpl.signatures_title || '';
-                document.getElementById('footer_text').value = currentTmpl.footer_text || '';
-                document.getElementById('show_logo').checked = (currentTmpl.show_logo == 1);
-                
-                document.getElementById('paper_size').value = currentTmpl.paper_size || 'A4';
-                document.getElementById('orientation').value = currentTmpl.orientation || 'Portrait';
-                document.getElementById('header_font').value = currentTmpl.header_font || 'Cairo';
-                document.getElementById('font_size_pt').value = currentTmpl.font_size_pt || 10;
-                document.getElementById('header_height').value = currentTmpl.header_height || 30;
-                document.getElementById('grid_gap_px').value = currentTmpl.grid_gap_px || 12;
-                document.getElementById('card_padding_px').value = currentTmpl.card_padding_px || 12;
-                document.getElementById('custom_css').value = currentTmpl.custom_css || '';
+                const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+                const setChecked = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
 
-                document.getElementById('header_right_html').value = currentTmpl.header_right_html || '';
-                document.getElementById('header_middle_html').value = currentTmpl.header_middle_html || '';
-                document.getElementById('header_left_html').value = currentTmpl.header_left_html || '';
+                setVal('hidden_template_id', currentTmpl.id);
+                if (templateNameInput) templateNameInput.value = currentTmpl.template_name;
+                setVal('header_right_1', currentTmpl.header_right_1 || '');
+                setVal('header_right_2', currentTmpl.header_right_2 || '');
+                setVal('header_right_3', currentTmpl.header_right_3 || '');
+                setVal('main_title', currentTmpl.main_title || '');
+                setVal('signatures_title', currentTmpl.signatures_title || '');
+                setVal('footer_text', currentTmpl.footer_text || '');
+                setChecked('show_logo', currentTmpl.show_logo == 1);
                 
-                document.getElementById('footer_right_html').value = currentTmpl.footer_right_html || '';
-                document.getElementById('footer_middle_html').value = currentTmpl.footer_middle_html || '';
-                document.getElementById('footer_left_html').value = currentTmpl.footer_left_html || '';
+                setVal('paper_size', currentTmpl.paper_size || 'A4');
+                setVal('orientation', currentTmpl.orientation || 'Portrait');
+                setVal('header_font', currentTmpl.header_font || 'Cairo');
+                setVal('font_size_pt', currentTmpl.font_size_pt || 10);
+                setVal('header_height', currentTmpl.header_height || 30);
+                setVal('grid_gap_px', currentTmpl.grid_gap_px || 12);
+                setVal('card_padding_px', currentTmpl.card_padding_px || 12);
+                setVal('custom_css', currentTmpl.custom_css || '');
+
+                setVal('header_right_html', currentTmpl.header_right_html || '');
+                setVal('header_middle_html', currentTmpl.header_middle_html || '');
+                setVal('header_left_html', currentTmpl.header_left_html || '');
                 
-                document.getElementById('extra_content_above').value = currentTmpl.extra_content_above || '';
-                document.getElementById('extra_content_below').value = currentTmpl.extra_content_below || '';
+                setVal('footer_right_html', currentTmpl.footer_right_html || '');
+                setVal('footer_middle_html', currentTmpl.footer_middle_html || '');
+                setVal('footer_left_html', currentTmpl.footer_left_html || '');
+                
+                setVal('extra_content_above', currentTmpl.extra_content_above || '');
+                setVal('extra_content_below', currentTmpl.extra_content_below || '');
 
                 try {
                     const hLayout = JSON.parse(currentTmpl.header_layout || '{"right":30,"middle":40,"left":30}');
-                    document.getElementById('header_ratio_right').value = hLayout.right || 30;
-                    document.getElementById('header_ratio_middle').value = hLayout.middle || 40;
-                    document.getElementById('header_ratio_left').value = hLayout.left || 30;
+                    setVal('header_ratio_right', hLayout.right || 30);
+                    setVal('header_ratio_middle', hLayout.middle || 40);
+                    setVal('header_ratio_left', hLayout.left || 30);
                     
                     const fLayout = JSON.parse(currentTmpl.footer_layout || '{"right":30,"middle":40,"left":30}');
-                    document.getElementById('footer_ratio_right').value = fLayout.right || 30;
-                    document.getElementById('footer_ratio_middle').value = fLayout.middle || 40;
-                    document.getElementById('footer_ratio_left').value = fLayout.left || 30;
+                    setVal('footer_ratio_right', fLayout.right || 30);
+                    setVal('footer_ratio_middle', fLayout.middle || 40);
+                    setVal('footer_ratio_left', fLayout.left || 30);
                 } catch(e) { console.error(e); }
 
                 if (currentTmpl.groups_config) {
                     try {
                         const gConfigs = JSON.parse(currentTmpl.groups_config);
                         if (gConfigs.page_margins) {
-                            document.getElementById('margin_top_mm').value = gConfigs.page_margins.top || 8;
-                            document.getElementById('margin_bottom_mm').value = gConfigs.page_margins.bottom || 8;
-                            document.getElementById('margin_right_mm').value = gConfigs.page_margins.right || 8;
-                            document.getElementById('margin_left_mm').value = gConfigs.page_margins.left || 8;
-                            document.getElementById('margin_header_bottom_px').value = gConfigs.page_margins.header_bottom || 12;
-                            document.getElementById('margin_footer_top_px').value = gConfigs.page_margins.footer_top || 12;
+                            setVal('margin_top_mm', gConfigs.page_margins.top || 8);
+                            setVal('margin_bottom_mm', gConfigs.page_margins.bottom || 8);
+                            setVal('margin_right_mm', gConfigs.page_margins.right || 8);
+                            setVal('margin_left_mm', gConfigs.page_margins.left || 8);
+                            setVal('margin_header_bottom_px', gConfigs.page_margins.header_bottom || 12);
+                            setVal('margin_footer_top_px', gConfigs.page_margins.footer_top || 12);
                         } else {
-                            document.getElementById('margin_top_mm').value = currentTmpl.page_margin_mm || 8;
-                            document.getElementById('margin_bottom_mm').value = currentTmpl.page_margin_mm || 8;
-                            document.getElementById('margin_right_mm').value = currentTmpl.page_margin_mm || 8;
-                            document.getElementById('margin_left_mm').value = currentTmpl.page_margin_mm || 8;
-                            document.getElementById('margin_header_bottom_px').value = 12;
-                            document.getElementById('margin_footer_top_px').value = 12;
+                            setVal('margin_top_mm', currentTmpl.page_margin_mm || 8);
+                            setVal('margin_bottom_mm', currentTmpl.page_margin_mm || 8);
+                            setVal('margin_right_mm', currentTmpl.page_margin_mm || 8);
+                            setVal('margin_left_mm', currentTmpl.page_margin_mm || 8);
+                            setVal('margin_header_bottom_px', 12);
+                            setVal('margin_footer_top_px', 12);
                         }
                     } catch(e) { console.error(e); }
                 }
@@ -1066,12 +1127,11 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                     } catch(e) { console.error(e); }
                 }
 
-                // استرجاع وإعادة بناء جدول اللجنة المشكلة المخزن بـ signatures_json
                 if (currentTmpl.signatures_json) {
                     try {
                         const comData = JSON.parse(currentTmpl.signatures_json);
-                        document.getElementById('show_committee_table').checked = (comData.show_committee == 1);
-                        document.getElementById('committee_table_title').value = comData.title || 'أعضاء اللجنة المشكلة للمعاينة';
+                        setChecked('show_committee_table', comData.show_committee == 1);
+                        setVal('committee_table_title', comData.title || 'أعضاء اللجنة المشكلة للمعاينة');
                         if (Array.isArray(comData.members) && comData.members.length > 0) {
                             comData.members.forEach(member => {
                                 addCommitteeRow(member.name, member.role, member.show);
@@ -1084,22 +1144,32 @@ if (!in_array("الموقع الجغرافي للمعاينة", $all_db_groups))
                         addCommitteeRow();
                     }
                 } else {
-                    document.getElementById('show_committee_table').checked = false;
-                    document.getElementById('committee_table_title').value = "أعضاء اللجنة المشكلة للمعاينة";
+                    setChecked('show_committee_table', false);
+                    setVal('committee_table_title', "أعضاء اللجنة المشكلة للمعاينة");
                     addCommitteeRow();
                 }
 
                 for (let i = 1; i <= 5; i++) {
-                    document.getElementById(`sig${i}_title`).value = currentTmpl[`sig${i}_title`] || '';
-                    document.getElementById(`sig${i}_name`).value = currentTmpl[`sig${i}_name`] || '';
-                    document.getElementById(`sig${i}_show`).checked = (currentTmpl[`sig${i}_show`] == 1);
+                    setVal(`sig${i}_title`, currentTmpl[`sig${i}_title`] || '');
+                    setVal(`sig${i}_name`, currentTmpl[`sig${i}_name`] || '');
+                    setChecked(`sig${i}_show`, currentTmpl[`sig${i}_show`] == 1);
                 }
 
                 if (currentTmpl.logo_path) {
                     const previewContainer = document.getElementById('logo-preview-container');
                     const previewImg = document.getElementById('logo-preview');
-                    previewImg.src = currentTmpl.logo_path;
-                    previewContainer.classList.remove('hidden');
+                    if (previewImg) previewImg.src = currentTmpl.logo_path;
+                    if (previewContainer) previewContainer.classList.remove('hidden');
+
+                    const logoPreviewImg = document.getElementById('logo-preview-img');
+                    const placeholder = document.getElementById('logo-placeholder');
+                    if (logoPreviewImg) {
+                        logoPreviewImg.src = currentTmpl.logo_path;
+                        logoPreviewImg.classList.remove('hidden');
+                    }
+                    if (placeholder) {
+                        placeholder.classList.add('hidden');
+                    }
                 }
 
                 if (currentTmpl.groups_config) {

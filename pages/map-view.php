@@ -8,6 +8,11 @@ if (!isset($_SESSION['user_id'])) {
 if (!function_exists('parseKmlToPolygonPoints')) {
     function parseKmlToPolygonPoints($kml_data) {
         $polygon = [];
+        if (empty($kml_data)) return $polygon;
+        
+        // كتم أخطاء XML وتجنب طباعة أي تحذيرات على الشاشة لضمان استقرار الواجهة
+        $previous_entity_loader = libxml_use_internal_errors(true);
+        
         try {
             $xml = simplexml_load_string($kml_data);
             if ($xml) {
@@ -26,6 +31,24 @@ if (!function_exists('parseKmlToPolygonPoints')) {
                 }
             }
         } catch (Exception $e) {}
+        
+        // استخدام محرك الاستخلاص الاحتياطي بالرموز النمطية لضمان قراءة ملفات KML المعقدة 100%
+        if (empty($polygon)) {
+            if (preg_match('/<coordinates[^>]*>(.*?)<\/coordinates>/is', $kml_data, $matches)) {
+                $coordsText = trim($matches[1]);
+                $coordsArr = preg_split('/\s+/', $coordsText);
+                foreach ($coordsArr as $pointStr) {
+                    $parts = explode(',', $pointStr);
+                    if (count($parts) >= 2) {
+                        $polygon[] = ['lat' => floatval($parts[1]), 'lng' => floatval($parts[0])];
+                    }
+                }
+            }
+        }
+        
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous_entity_loader);
+        
         return $polygon;
     }
 }
@@ -124,15 +147,15 @@ try {
     die("خطأ قاعدة البيانات: " . $e->getMessage()); 
 }
 
-// 2. جلب الأقسام المصرح بها والحدود الإدارية
+// 2. جلب الأقسام المصرح بها والحدود الإدارية (تعديل: إتاحة الحدود الإدارية للجميع)
+$boundaries = $pdo->query("SELECT id, name, color, kml_data FROM boundaries ORDER BY id DESC")->fetchAll();
+
 if ($role === 'admin') {
     $types = $pdo->query("SELECT * FROM record_types ORDER BY id DESC")->fetchAll();
-    $boundaries = $pdo->query("SELECT id, name, color, kml_data FROM boundaries ORDER BY id DESC")->fetchAll();
 } else {
     $stmtT = $pdo->prepare("SELECT * FROM record_types WHERE FIND_IN_SET(id, ?) ORDER BY id DESC");
     $stmtT->execute([$allowed_types]);
     $types = $stmtT->fetchAll();
-    $boundaries = []; 
 }
 
 $highlightId = isset($_GET['highlight']) ? intval($_GET['highlight']) : 0;
@@ -201,8 +224,7 @@ $highlightId = isset($_GET['highlight']) ? intval($_GET['highlight']) : 0;
                 </div>
             </div>
 
-            <!-- طبقة الحدود الإدارية KML المنسقة -->
-            <?php if ($role === 'admin'): ?>
+            <!-- طبقة الحدود الإدارية KML المنسقة (تعديل: إتاحة الفلترة والمشاهدة لجميع الرتب) -->
             <div class="relative inline-block text-right">
                 <button onclick="toggleDropdown('boundaries-dropdown')" class="flex items-center space-x-1.5 space-x-reverse bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white px-3 py-2 rounded-xl text-xs font-bold transition shadow-sm">
                     <i class="fa-solid fa-map-location text-orange-400"></i>
@@ -222,7 +244,6 @@ $highlightId = isset($_GET['highlight']) ? intval($_GET['highlight']) : 0;
                     </div>
                 </div>
             </div>
-            <?php endif; ?>
 
             <!-- الفلترة الزمنية للمعاينة -->
             <div class="relative inline-block text-right">
@@ -471,28 +492,55 @@ $highlightId = isset($_GET['highlight']) ? intval($_GET['highlight']) : 0;
         });
     }
 
+    // تعديل وتطوير دالة التحديد الجغرافي الميداني لترسم دبوس رادار متوهج ومميز باللون الأحمر بدقة GPS فائقة
     function locateMe() {
         if (navigator.geolocation) {
-            Swal.fire({ title: 'جاري تحديد موقعك...', text: 'يرجى تفعيل الـ GPS.', timer: 2000, didOpen: () => { Swal.showLoading(); } });
+            Swal.fire({ title: 'جاري تحديد موقعك الجغرافي...', text: 'يرجى تفعيل الـ GPS بمتصفحك والسماح بالوصول للموقع.', timer: 2000, didOpen: () => { Swal.showLoading(); } });
+            
             navigator.geolocation.getCurrentPosition(function(position) {
                 const lat = position.coords.latitude;
                 const lng = position.coords.longitude;
-                const accuracy = position.coords.accuracy || 30;
+                const accuracy = position.coords.accuracy || 10; // دقة الالتقاط بالأمتار
 
-                map.flyTo([lat, lng], 16);
+                map.flyTo([lat, lng], 17); // تكبير وتقريب مباشر لطبقة الشارع
 
+                // إزالة التحديد القديم من الخريطة بالكامل لمنع التراكم والتراص
                 if (myLocationMarker) { map.removeLayer(myLocationMarker); }
 
-                myLocationMarker = L.circle([lat, lng], {
-                    color: '#10b981',
-                    fillColor: '#10b981',
-                    fillOpacity: 0.15,
+                // تجميع الدبوس التفاعلي والقرص المحيط بـ featureGroup موحدة
+                const locGroup = L.featureGroup();
+
+                // 1. الدبوس المتوهج بوسط الرادار (Pulsing Red Marker)
+                const exactPin = L.marker([lat, lng], {
+                    icon: L.divIcon({
+                        html: '<div class="relative flex items-center justify-center"><i class="fa-solid fa-circle text-red-500 animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"></i><i class="fa-solid fa-location-crosshairs text-3xl text-red-600 relative"></i></div>',
+                        iconSize: [30, 30],
+                        iconAnchor: [15, 15],
+                        popupAnchor: [0, -15],
+                        className: 'my-exact-location-icon'
+                    })
+                }).addTo(locGroup).bindPopup("<b>موقعك الجغرافي الفعلي الحالي بدقة</b>");
+
+                // 2. قرص التموضع الراداري المحيط (L.circle)
+                L.circle([lat, lng], {
+                    color: '#ef4444',
+                    fillColor: '#ef4444',
+                    fillOpacity: 0.1,
                     radius: accuracy
-                }).addTo(map).bindPopup("<b>موقعك التقريبي الحالي</b>").openPopup();
+                }).addTo(locGroup);
+
+                locGroup.addTo(map);
+                myLocationMarker = locGroup; // حفظ المجموعة بالمتغير لتسهيل تنظيف الخريطة لاحقاً
+
+                exactPin.openPopup();
                 Swal.close();
             }, function() {
-                Swal.fire({ icon: 'error', title: 'خطأ', text: 'فشلت عملية التحديد الجغرافي لموقعك.' });
-            }, { enableHighAccuracy: true });
+                Swal.fire({ icon: 'error', title: 'خطأ في جلب الموقع', text: 'فشلت عملية التحديد الجغرافي الفعلي لموقعك، يرجى تفعيل الـ GPS والسماح بالإذن للمتصفح.' });
+            }, { 
+                enableHighAccuracy: true, // إجبار السيرفر والمتصفح على تشغيل شريحة الـ GPS الحقيقية
+                timeout: 15000,           // انتظار 15 ثانية كحد أقصى للاتصال بالأقمار الصناعية بدقة
+                maximumAge: 0             // إهمال الكاش وتحديث الموقع بالثانية
+            });
         }
     }
 
@@ -636,6 +684,7 @@ $highlightId = isset($_GET['highlight']) ? intval($_GET['highlight']) : 0;
         }
     }
 
+    // تصفية ورسم السجلات المصرح بها بالكامل على الخريطة
     function drawMarkers() {
         markersLayer.clearLayers();
         allMarkers = [];
